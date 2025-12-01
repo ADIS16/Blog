@@ -9,13 +9,12 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 
-    <!-- FIREBASE SDK (Wersja stabilna 10.13.2) -->
+    <!-- FIREBASE SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
-        // --- KONFIGURACJA FIREBASE ---
         const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
@@ -25,418 +24,81 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        // --- INICJALIZACJA ---
-        let app, auth, db, docRef;
-        let isConfigError = false;
+        // Twój email Szefa - musi pasować do tego w Rules w Firebase
+        const BOSS_EMAIL = "adrianniekil@gmail.com";
 
+        let app, auth, db, mainDocRef;
+        
         try {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
-            console.log("Firebase zainicjowany poprawnie.");
-        } catch (e) {
-            isConfigError = true;
-            console.error("Błąd inicjalizacji Firebase:", e);
-        }
+        } catch (e) { console.error("Firebase init error", e); }
 
-        // --- FUNKCJA SYNCHRONIZACJI ---
+        // --- SYNCHRONIZACJA DANYCH ---
         function initDataSync() {
-            if(isConfigError) {
-                showToast("Błąd konfiguracji Firebase! Sprawdź konsolę.", "error");
-                return;
-            }
-            
-            docRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+            mainDocRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
-            onSnapshot(docRef, (snapshot) => {
-                const statusEl = document.getElementById('cloud-status-text');
-                if(statusEl) {
-                    statusEl.innerText = "Online";
-                    statusEl.style.color = "#22c55e"; // Green
-                }
+            onSnapshot(mainDocRef, (snapshot) => {
+                document.getElementById('cloud-status-text').innerText = "Online";
+                document.getElementById('cloud-status-text').style.color = "#22c55e";
                 
                 if (snapshot.exists()) {
-                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: snapshot.data() }));
+                    const data = snapshot.data();
+                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
                 } else {
-                    console.log("Baza pusta. Próba inicjalizacji...");
-                    if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
-                        .catch(err => console.log("Czekam na dane (Brak uprawnień do zapisu bazy)."));
+                    // Inicjalizacja bazy (tylko Szef da radę to zrobić przez Rules)
+                    if(window.DEFAULT_DATA_TEMPLATE) setDoc(mainDocRef, window.DEFAULT_DATA_TEMPLATE).catch(e=>{});
                 }
             }, (error) => {
-                console.error("Firebase Error:", error);
-                const statusEl = document.getElementById('cloud-status-text');
-                
-                if (error.code === 'permission-denied') {
-                    if(statusEl) { statusEl.innerText = "Tylko Odczyt"; statusEl.style.color = "orange"; }
-                } else if (error.code === 'auth/api-key-not-valid' || error.message.includes('api-key')) {
-                    showRepairModal("Błędny API KEY w kodzie strony!");
-                } else {
-                    if(statusEl) { statusEl.innerText = "Błąd"; statusEl.style.color = "red"; }
+                if(error.code === 'permission-denied') {
+                    // Goście widzą błąd przy nasłuchu jeśli nie mają uprawnień do zapisu? Nie, do odczytu mają.
+                    // Ale w razie czego:
+                    console.log("Tryb tylko do odczytu (lub błąd reguł)");
                 }
             });
         }
 
-        window.addEventListener('load', () => {
-             initDataSync();
-        });
+        window.addEventListener('load', initDataSync);
 
-        // Eksport API
+        // --- API ---
         window.cloudAPI = {
             auth: auth,
-            checkAdminPermissions: async () => {
-                if(!auth.currentUser) return false;
+            // Zapis głównych danych (Posty/Produkty) - Tylko dla Szefa
+            saveContent: async (newData) => {
+                window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData })); // Optymistycznie
+                try { await setDoc(mainDocRef, newData, { merge: true }); } 
+                catch (e) { 
+                    if(e.code === 'permission-denied') showToast("Tylko Szef może edytować treść!", "error");
+                    else console.error(e);
+                }
+            },
+            // Zapis profilu użytkownika (do osobnej kolekcji)
+            saveUserProfile: async (uid, data) => {
                 try {
-                    // Próba zapisu - ostateczny test admina
-                    const check = setDoc(docRef, { _lastAdminCheck: Date.now() }, { merge: true });
-                    // Timeout 4 sekundy
-                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4000));
-                    await Promise.race([check, timeout]);
-                    return true;
-                } catch(e) {
-                    console.warn("Test Admina nieudany:", e);
-                    return false;
-                }
+                    await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), data, { merge: true });
+                    // Odśwież lokalnie
+                    if(!APP_DATA.users) APP_DATA.users = {};
+                    APP_DATA.users[uid] = data;
+                    renderAll(); 
+                } catch(e) { console.error("Save profile error", e); }
             },
-            save: async (newData) => {
-                if (!docRef) return;
-                window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
-                try { 
-                    await setDoc(docRef, newData, { merge: true }); 
-                } catch (e) { 
-                    if(e.code === 'permission-denied') showToast("Brak uprawnień! (Tylko Właściciel)", "error");
-                    else showToast("Błąd zapisu (Jesteś offline?)", "error");
-                }
-            },
-            login: async (email, pass) => {
+            // Pobranie wszystkich użytkowników (Dla Admina i do wyświetlania komentarzy)
+            fetchAllUsers: async () => {
                 try {
-                    await signInWithEmailAndPassword(auth, email, pass);
-                } catch(e) {
-                    if(e.code === 'auth/api-key-not-valid') showRepairModal("Błędny klucz API!");
-                    throw e;
-                }
+                    const querySnapshot = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
+                    const usersMap = {};
+                    querySnapshot.forEach((doc) => { usersMap[doc.id] = doc.data(); });
+                    return usersMap;
+                } catch(e) { return {}; }
             },
-            register: async (email, pass) => createUserWithEmailAndPassword(auth, email, pass),
-            logout: async () => signOut(auth),
-            updateUserPass: async (newPass) => updatePassword(auth.currentUser, newPass),
-            onAuth: (cb) => { if(auth) onAuthStateChanged(auth, cb); }
+            login: (e, p) => signInWithEmailAndPassword(auth, e, p),
+            register: (e, p) => createUserWithEmailAndPassword(auth, e, p),
+            logout: () => signOut(auth),
+            updatePass: (p) => updatePassword(auth.currentUser, p)
         };
 
-        window.saveRepairConfig = function() { alert("Edytuj plik index.html!"); }
-        function showRepairModal(msg) {
-            const modal = document.getElementById('repair-modal');
-            if(modal) {
-                document.getElementById('repair-reason').innerHTML = msg;
-                modal.classList.remove('hidden');
-            }
-        }
-    </script>
-
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'sans-serif'], display: ['Syne', 'sans-serif'] },
-                    colors: { 
-                        'brand-purple': '#8b5cf6', 'brand-pink': '#ec4899', 
-                        'light-bg': '#f3f4f6', 'card-bg': '#ffffff', 
-                        'text-main': '#111827', 'text-muted': '#6b7280'
-                    },
-                    boxShadow: { 'soft': '0 4px 20px -2px rgba(0, 0, 0, 0.05)' }
-                }
-            }
-        }
-    </script>
-
-    <style>
-        body { background-color: #f3f4f6; color: #111827; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .story-ring { background: linear-gradient(45deg, #8b5cf6, #ec4899); padding: 3px; border-radius: 50%; }
-        .section-fade { animation: fadeIn 0.3s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        .masonry-grid { column-count: 1; gap: 1.5rem; }
-        @media (min-width: 768px) { .masonry-grid { column-count: 2; } }
-        @media (min-width: 1024px) { .masonry-grid { column-count: 3; } }
-        .masonry-item { break-inside: avoid; margin-bottom: 1.5rem; }
-        
-        #cloud-status { position: fixed; bottom: 10px; left: 10px; font-size: 10px; opacity: 0.8; z-index: 1000; color: #6b7280; display: flex; align-items: center; gap: 5px; background: white; padding: 5px 10px; border-radius: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .pulse-green { width: 6px; height: 6px; background: #22c55e; border-radius: 50%; animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-
-        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
-        .toast { background: white; color: #1f2937; padding: 12px 24px; border-radius: 12px; border-left: 4px solid #8b5cf6; box-shadow: 0 10px 30px rgba(0,0,0,0.1); font-size: 14px; animation: slideIn 0.3s ease; }
-        .toast.error { border-left-color: #ef4444; }
-        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
-        
-        .spinner { border: 2px solid rgba(0,0,0,0.1); border-top: 2px solid #8b5cf6; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.6s linear infinite; display: inline-block; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
-</head>
-<body class="antialiased min-h-screen flex flex-col relative">
-
-    <!-- REPAIR MODAL -->
-    <div id="repair-modal" class="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center hidden p-4">
-        <div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl text-center">
-            <h2 class="text-2xl font-bold text-gray-900 mb-2">Problem z konfiguracją</h2>
-            <p id="repair-reason" class="text-red-500 font-bold text-sm mb-4"></p>
-            <button onclick="location.reload()" class="w-full bg-brand-purple text-white font-bold py-3 rounded-xl hover:bg-brand-pink transition-all shadow-lg">ODŚWIEŻ STRONĘ</button>
-        </div>
-    </div>
-
-    <div id="cloud-status"><span class="pulse-green"></span> <span id="cloud-status-text">Łączenie...</span></div>
-    <div id="toast-container"></div>
-
-    <!-- ADMIN BAR -->
-    <div id="admin-bar" class="hidden bg-gradient-to-r from-brand-purple to-brand-pink text-white text-xs font-bold text-center py-2 uppercase tracking-widest relative z-[60] shadow-md">
-        <span><i class="fas fa-lock mr-2"></i>Panel Administratora</span>
-    </div>
-
-    <!-- NAVIGATION -->
-    <nav class="fixed bottom-0 md:top-0 md:bottom-auto w-full z-50 bg-white/90 backdrop-blur-md border-t md:border-b md:border-t-0 border-gray-200 h-16 md:h-20 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
-            <div class="hidden md:block font-display text-2xl font-bold tracking-tighter cursor-pointer hover:text-brand-purple transition-colors text-black" id="nav-logo" onclick="switchTab('feed')"></div>
-
-            <div class="flex w-full md:w-auto justify-around md:justify-center md:space-x-8 items-center h-full">
-                <button onclick="switchTab('feed')" class="nav-btn active text-brand-purple flex flex-col md:flex-row items-center gap-1 md:gap-2 transition-transform hover:scale-105">
-                    <i class="fas fa-home text-xl"></i> <span class="text-xs md:text-sm font-bold">VLOG</span>
-                </button>
-                <button onclick="switchTab('shop')" class="nav-btn text-gray-400 hover:text-black flex flex-col md:flex-row items-center gap-1 md:gap-2 transition-transform hover:scale-105">
-                    <i class="fas fa-shopping-bag text-xl"></i> <span class="text-xs md:text-sm font-bold">SKLEP</span>
-                </button>
-                <button id="nav-admin-btn" onclick="switchTab('admin')" class="hidden nav-btn text-red-500 hover:text-red-700 flex flex-col md:flex-row items-center gap-1 md:gap-2 transition-transform hover:scale-105">
-                    <i class="fas fa-cogs text-xl"></i> <span class="text-xs md:text-sm font-bold">ZARZĄDZAJ</span>
-                </button>
-            </div>
-
-            <div class="hidden md:flex items-center gap-4 text-black">
-                <!-- LOGGED OUT -->
-                <div id="user-menu-guest" class="cursor-pointer hover:text-brand-purple transition-colors" onclick="handleAuthClick()">
-                    <i class="far fa-user-circle text-2xl"></i>
-                </div>
-                <!-- LOGGED IN (USER AVATAR) -->
-                <div id="user-menu-logged" class="hidden cursor-pointer hover:scale-110 transition-transform relative group" onclick="handleAuthClick()">
-                    <img id="nav-user-avatar" src="" class="w-8 h-8 rounded-full border border-gray-200 object-cover">
-                    <div class="absolute w-3 h-3 bg-green-500 rounded-full bottom-0 right-0 border-2 border-white"></div>
-                </div>
-
-                <div class="relative cursor-pointer hover:scale-110 transition-transform" onclick="toggleCart()">
-                    <i class="fas fa-shopping-cart text-xl"></i>
-                    <span id="cart-badge" class="absolute -top-2 -right-2 bg-brand-pink text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center scale-0 transition-transform shadow-md">0</span>
-                </div>
-            </div>
-            
-            <div class="md:hidden absolute top-[-60px] right-4 flex gap-3">
-                 <div class="bg-white p-3 rounded-full shadow-lg border border-gray-200 text-black" onclick="handleAuthClick()">
-                    <i class="fas fa-user"></i>
-                </div>
-                <div class="bg-brand-purple p-3 rounded-full shadow-lg border border-white/20 relative text-white" onclick="toggleCart()">
-                    <i class="fas fa-shopping-cart"></i>
-                    <span id="cart-badge-mobile" class="absolute -top-1 -right-1 bg-brand-pink text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center scale-0 transition-transform">0</span>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    <!-- CONTENT -->
-    <main class="flex-grow pt-4 pb-20 md:pt-24 md:pb-12 px-4 max-w-7xl mx-auto w-full">
-
-        <!-- FEED -->
-        <div id="view-feed" class="section-fade">
-            <div class="flex flex-col md:flex-row items-center md:items-start gap-6 mb-12 border-b border-gray-200 pb-8">
-                <div class="story-ring p-1"><img id="profile-avatar" src="" class="w-24 h-24 md:w-32 md:h-32 rounded-full object-cover border-4 border-white shadow-lg"></div>
-                <div class="text-center md:text-left flex-1">
-                    <h1 class="font-display text-3xl md:text-5xl font-bold mb-2 text-black" id="profile-name">...</h1>
-                    <p class="text-gray-500 max-w-lg mb-4 font-medium" id="profile-bio">...</p>
-                    <div class="flex justify-center md:justify-start gap-4 text-2xl text-gray-400" id="social-icons"></div>
-                </div>
-                <div class="flex gap-8 text-center bg-white p-6 rounded-2xl border border-gray-100 shadow-soft">
-                    <div><div class="font-display text-2xl font-bold text-black" id="stat-yt">-</div><div class="text-xs text-gray-400 uppercase">YouTube</div></div>
-                    <div><div class="font-display text-2xl font-bold text-black" id="stat-ig">-</div><div class="text-xs text-gray-400 uppercase">Instagram</div></div>
-                    <div><div class="font-display text-2xl font-bold text-black" id="stat-projects">-</div><div class="text-xs text-gray-400 uppercase">Projekty</div></div>
-                </div>
-            </div>
-            <div class="masonry-grid" id="blog-container">
-                <div class="bg-white h-64 rounded-2xl animate-pulse"></div>
-            </div>
-        </div>
-
-        <!-- SHOP -->
-        <div id="view-shop" class="hidden section-fade">
-            <div class="text-center mb-12">
-                <span class="text-brand-purple font-bold tracking-widest text-xs uppercase bg-brand-purple/10 px-3 py-1 rounded-full border border-brand-purple/20">Official Store</span>
-                <h2 class="font-display text-4xl md:text-6xl font-bold mt-4 text-black">LIMITED <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-purple to-brand-pink">DROP</span></h2>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-8" id="products-container"></div>
-        </div>
-
-        <!-- ADMIN -->
-        <div id="view-admin" class="hidden section-fade">
-            <div class="bg-white p-8 rounded-3xl border border-gray-200 shadow-soft">
-                <div class="flex flex-col md:flex-row items-center justify-between mb-8 gap-4">
-                    <h2 class="font-display text-3xl md:text-4xl font-bold text-black"><i class="fas fa-terminal text-brand-purple mr-3"></i>Dashboard</h2>
-                    <div class="flex gap-2">
-                        <button onclick="adminResetToDefaults()" class="bg-red-50 text-red-500 border border-red-200 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-500 hover:text-white transition-all"><i class="fas fa-trash-alt mr-1"></i> RESET BAZY</button>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <!-- Column 1 -->
-                    <div class="space-y-8">
-                        <div class="bg-gray-50 p-6 rounded-2xl border border-gray-200">
-                            <h3 class="text-lg font-bold mb-4 text-gray-700">Edytuj Profil</h3>
-                            <div class="grid grid-cols-3 gap-3">
-                                <input id="admin-stat-ig" type="text" class="w-full bg-white border border-gray-200 p-2 rounded text-black text-sm" placeholder="IG">
-                                <input id="admin-stat-yt" type="text" class="w-full bg-white border border-gray-200 p-2 rounded text-black text-sm" placeholder="YT">
-                                <input id="admin-stat-proj" type="text" class="w-full bg-white border border-gray-200 p-2 rounded text-black text-sm" placeholder="PROJ">
-                            </div>
-                            <button onclick="adminUpdateStats()" class="w-full mt-4 bg-white hover:bg-gray-100 text-brand-purple font-bold py-2 rounded text-sm transition-colors border border-brand-purple/20 shadow-sm">Zapisz</button>
-                        </div>
-
-                        <div class="bg-gray-50 p-6 rounded-2xl border border-gray-200">
-                            <h3 class="text-lg font-bold mb-4 text-gray-700">Dodaj Post</h3>
-                            <div class="space-y-3">
-                                <input id="admin-post-title" type="text" placeholder="Tytuł posta" class="w-full bg-white border border-gray-200 p-3 rounded-lg text-black focus:border-brand-purple outline-none">
-                                <textarea id="admin-post-text" placeholder="Treść..." class="w-full bg-white border border-gray-200 p-3 rounded-lg text-black h-20 focus:border-brand-purple outline-none"></textarea>
-                                <div class="flex gap-2">
-                                    <select id="admin-post-type" class="bg-white border border-gray-200 p-3 rounded-lg text-black text-sm w-1/3">
-                                        <option value="status">Status</option>
-                                        <option value="photo">Zdjęcie</option>
-                                        <option value="video">Wideo</option>
-                                    </select>
-                                    <div class="relative w-2/3">
-                                        <input type="file" id="admin-post-file" accept="image/*" class="hidden" onchange="handleFileSelect(event)">
-                                        <label for="admin-post-file" id="file-label" class="flex items-center justify-center w-full h-full bg-white border border-gray-200 p-3 rounded-lg text-gray-500 text-sm cursor-pointer hover:bg-gray-100 truncate shadow-sm">
-                                            <i class="fas fa-camera mr-2"></i> Wybierz plik...
-                                        </label>
-                                    </div>
-                                </div>
-                                <input id="admin-post-video" type="text" placeholder="Link do YouTube" class="w-full bg-white border border-gray-200 p-3 rounded-lg text-black text-sm">
-                                <button onclick="adminAddPost()" id="btn-post" class="w-full bg-brand-purple hover:bg-brand-pink text-white font-bold py-3 rounded-lg transition-colors shadow-lg">PUBLIKUJ</button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Column 2 -->
-                    <div class="space-y-8">
-                        <div class="bg-gray-50 p-6 rounded-2xl border border-gray-200">
-                            <h3 class="text-lg font-bold mb-4 text-gray-700">Sklep</h3>
-                            <div class="space-y-3">
-                                <input id="admin-prod-name" type="text" placeholder="Nazwa produktu" class="w-full bg-white border border-gray-200 p-3 rounded-lg text-black">
-                                <div class="grid grid-cols-2 gap-3">
-                                    <input id="admin-prod-price" type="number" placeholder="Cena" class="bg-white border border-gray-200 p-3 rounded-lg text-black">
-                                    <input id="admin-prod-label" type="text" placeholder="Etykieta" class="bg-white border border-gray-200 p-3 rounded-lg text-black">
-                                </div>
-                                <div class="relative">
-                                    <input type="file" id="admin-prod-file" accept="image/*" class="hidden" onchange="handleProductFileSelect(event)">
-                                    <label for="admin-prod-file" id="prod-file-label" class="flex items-center justify-center w-full bg-white border border-gray-200 p-3 rounded-lg text-gray-500 text-sm cursor-pointer hover:bg-gray-100 shadow-sm">
-                                        <i class="fas fa-camera mr-2"></i> Zdjęcie produktu...
-                                    </label>
-                                </div>
-                                <button onclick="adminAddProduct()" id="btn-prod" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-lg transition-colors mt-2 shadow-lg">DODAJ PRODUKT</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Users -->
-                <div class="mt-8 bg-gray-50 p-6 rounded-2xl border border-gray-200">
-                    <div class="flex justify-between items-center mb-4 border-b border-gray-200 pb-4">
-                        <h3 class="text-lg font-bold text-gray-700"><i class="fas fa-users mr-2"></i>Użytkownicy (<span id="admin-user-count" class="text-brand-purple">0</span>)</h3>
-                    </div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-gray-600">
-                            <thead class="bg-gray-100 text-gray-500 uppercase text-xs">
-                                <tr><th class="p-3 rounded-l-lg">Nick</th><th class="p-3">Rola</th><th class="p-3 text-right rounded-r-lg">Akcje</th></tr>
-                            </thead>
-                            <tbody id="admin-users-list" class="divide-y divide-gray-200"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </main>
-
-    <!-- AUTH MODAL / USER PANEL -->
-    <div id="auth-modal" class="fixed inset-0 z-[100] bg-black/80 hidden flex items-center justify-center backdrop-blur-sm px-4">
-        <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm relative max-h-[90vh] overflow-y-auto">
-            <button onclick="closeAuthModal()" class="absolute top-4 right-4 text-gray-400 hover:text-black"><i class="fas fa-times text-xl"></i></button>
-            <div id="auth-tabs" class="flex border-b border-gray-100 mb-6">
-                <button onclick="switchAuthTab('login')" id="tab-login" class="flex-1 pb-3 text-brand-purple border-b-2 border-brand-purple font-bold">Logowanie</button>
-                <button onclick="switchAuthTab('register')" id="tab-register" class="flex-1 pb-3 text-gray-400 hover:text-black">Rejestracja</button>
-            </div>
-            
-            <div id="form-login">
-                <input id="login-email" type="email" placeholder="Email" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-3 text-black outline-none focus:ring-2 focus:ring-brand-purple/20">
-                <input id="login-password" type="password" placeholder="Hasło" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-4 text-black outline-none focus:ring-2 focus:ring-brand-purple/20">
-                <button onclick="handleLogin()" id="btn-login-action" class="w-full bg-brand-purple text-white font-bold py-4 rounded-xl hover:bg-brand-pink transition-colors shadow-lg">ZALOGUJ SIĘ</button>
-            </div>
-            
-            <div id="form-register" class="hidden">
-                <input id="reg-nick" type="text" placeholder="Nick" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-3 text-black outline-none">
-                <input id="reg-email" type="email" placeholder="Email" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-3 text-black outline-none">
-                <input id="reg-password" type="password" placeholder="Hasło (min. 6 znaków)" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-4 text-black outline-none">
-                <button onclick="handleRegister()" id="btn-reg-action" class="w-full bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-800 transition-colors shadow-lg">ZAŁÓŻ KONTO</button>
-            </div>
-            
-            <!-- PANEL UŻYTKOWNIKA (WYŚWIETLANY JAKO MODAL) -->
-            <div id="user-profile-view" class="hidden text-center">
-                <h3 class="text-xl font-bold mb-4 border-b border-gray-100 pb-2">TWÓJ PROFIL</h3>
-                
-                <div class="relative w-24 h-24 mx-auto mb-4 group">
-                    <img id="user-avatar-img" class="w-full h-full rounded-full object-cover shadow-lg bg-gray-200" src="" onerror="this.src='https://ui-avatars.com/api/?name=U&background=8b5cf6&color=fff'">
-                </div>
-                
-                <h3 id="user-display-name" class="text-2xl font-bold mb-1 text-black">User</h3>
-                <p id="user-email-display" class="text-gray-500 text-sm mb-4"></p>
-                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded">ADMIN (WŁAŚCICIEL)</span></div>
-
-                <!-- SEKCJA EDYCJI -->
-                <div class="bg-gray-50 p-4 rounded-xl text-left space-y-3 mb-4">
-                    <h4 class="text-xs font-bold text-gray-400 uppercase">Edycja Danych</h4>
-                    <div>
-                        <input id="edit-nick" type="text" class="w-full bg-white border border-gray-200 p-2 rounded text-sm text-black" placeholder="Twój nick">
-                    </div>
-                    <div>
-                        <input id="edit-avatar" type="text" placeholder="Link do avatara (URL)" class="w-full bg-white border border-gray-200 p-2 rounded text-sm text-black mb-1">
-                        <input type="file" id="edit-avatar-file" class="text-xs text-gray-500 w-full" onchange="handleAvatarFile(event)">
-                    </div>
-                    <div>
-                        <input id="edit-password" type="password" placeholder="Nowe hasło (opcjonalne)" class="w-full bg-white border border-gray-200 p-2 rounded text-sm text-black">
-                    </div>
-                    <button onclick="handleUpdateProfile()" class="w-full bg-brand-purple text-white font-bold py-2 rounded-lg text-sm hover:bg-brand-pink transition-colors">ZAPISZ ZMIANY</button>
-                </div>
-
-                <button onclick="handleLogout()" class="w-full border-2 border-red-100 text-red-500 font-bold py-2 rounded-xl hover:bg-red-50 transition-colors mb-2 text-sm">WYLOGUJ</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- CART MODAL -->
-    <div id="cart-modal" class="fixed inset-0 z-[100] bg-black/50 hidden backdrop-blur-sm">
-        <div class="absolute inset-0" onclick="toggleCart()"></div>
-        <div id="cart-content" class="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-2xl flex flex-col transform transition-transform duration-300 translate-x-full">
-            <div class="flex items-center justify-between p-6 border-b border-gray-100">
-                <h2 class="font-display text-2xl font-bold text-black">KOSZYK</h2>
-                <button onclick="toggleCart()" class="text-2xl text-gray-400 hover:text-black"><i class="fas fa-times"></i></button>
-            </div>
-            <div id="cart-items" class="flex-1 overflow-y-auto p-6 space-y-4"></div>
-            <div class="p-6 border-t border-gray-100 bg-gray-50">
-                <div class="flex justify-between items-center mb-4 text-xl font-bold text-black"><span>Suma:</span><span id="cart-total" class="text-brand-purple">0.00 PLN</span></div>
-                <button class="w-full bg-brand-purple text-white font-bold py-4 rounded-xl hover:bg-brand-pink transition-colors shadow-lg">PRZEJDŹ DO PŁATNOŚCI</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- VIDEO MODAL -->
-    <div id="video-modal" class="fixed inset-0 z-[110] bg-black/95 hidden flex items-center justify-center p-4">
-        <div class="absolute inset-0" onclick="closeVideo()"></div>
-        <div class="relative w-full max-w-4xl aspect-video bg-black rounded-xl overflow-hidden shadow-2xl">
-            <button onclick="closeVideo()" class="absolute top-4 right-4 z-20 bg-black/50 hover:bg-brand-purple text-white w-10 h-10 rounded-full flex items-center justify-center"><i class="fas fa-times"></i></button>
-            <iframe id="video-frame" class="w-full h-full" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-        </div>
-    </div>
-
-    <script>
-        // DOMYŚLNE DANE (Template)
+        // --- LOGIKA APLIKACJI ---
         window.DEFAULT_DATA_TEMPLATE = {
             config: {
                 firstName: "ADRION", lastName: "___",   
@@ -446,447 +108,529 @@
                 stats: { youtube: "10K", instagram: "14.5K", projects: "5" },
                 links: { instagram: "https://www.instagram.com/___adrion___/" }
             },
-            posts: [
-                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zaloguj się jako Właściciel, aby zarządzać.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
-            ],
-            products: [],
-            userRoles: {}
+            posts: [{ id: 101, type: 'status', title: 'Start', text: 'Witaj w świecie Adrion.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }],
+            products: []
         };
 
-        const CACHE_KEY = 'hub_data_cache_prod';
-        let APP_DATA;
-        try {
-            const cached = localStorage.getItem(CACHE_KEY);
-            APP_DATA = cached ? JSON.parse(cached) : JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
-        } catch(e) { APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE)); }
+        const CACHE_KEY = 'hub_data_v2';
+        let APP_DATA = JSON.parse(localStorage.getItem(CACHE_KEY) || JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+        // Lokalny cache użytkowników (do szybkiego wyświetlania)
+        APP_DATA.users = APP_DATA.users || {};
 
-        // --- ZABEZPIECZENIE DANYCH ---
-        if (!APP_DATA || typeof APP_DATA !== 'object') {
-            APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
-        }
-        if (!APP_DATA.posts) APP_DATA.posts = [];
-        if (!APP_DATA.products) APP_DATA.products = [];
-        if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
+        let currentUser = null;
+        let isAdmin = false;
+        let currentUploadBase64 = '';
 
-        let currentUser = null; 
-        let currentUserRole = 'guest';
-        let currentPostImageBase64 = '';
-        let currentProductImageBase64 = '';
-        let currentAvatarBase64 = '';
-        let cart = []; 
-
-        function updateAppData(newData) {
-            APP_DATA = newData;
-            if (!APP_DATA.posts) APP_DATA.posts = [];
-            if (!APP_DATA.products) APP_DATA.products = [];
-            if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
-            localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
-            checkUserRole(); renderAll();
-        }
-
+        // Obsługa aktualizacji z chmury
         window.addEventListener('cloudDataUpdated', (e) => {
-            if (e.detail) {
-                updateAppData(e.detail);
+            if(e.detail) {
+                // Zachowaj users, bo przychodzą tylko posty/produkty z głównego pliku
+                const usersBackup = APP_DATA.users;
+                APP_DATA = e.detail;
+                APP_DATA.users = usersBackup || {}; 
+                renderAll();
             }
         });
 
-        if (window.cloudAPI) {
-            window.cloudAPI.onAuth(async (user) => {
+        // Obsługa logowania
+        if(window.cloudAPI) {
+            onAuthStateChanged(auth, async (user) => {
                 currentUser = user;
-                if(user) {
-                    showToast("Weryfikacja uprawnień...", "info");
-                    // Automatyczne sprawdzenie admina przy logowaniu
-                    const isAdmin = await window.cloudAPI.checkAdminPermissions();
-                    if(isAdmin) {
-                        currentUserRole = 'admin';
-                        showToast("Zalogowano jako ADMIN", "success");
-                        // Zapisz/Odśwież rolę w bazie
-                        if(!APP_DATA.userRoles[user.email] || APP_DATA.userRoles[user.email].role !== 'admin') {
-                            if(!APP_DATA.userRoles[user.email]) APP_DATA.userRoles[user.email] = {};
-                            APP_DATA.userRoles[user.email].role = 'admin';
-                            if(!APP_DATA.userRoles[user.email].nick) APP_DATA.userRoles[user.email].nick = "Szef";
-                            window.cloudAPI.save(APP_DATA);
-                        }
+                if (user) {
+                    // Sprawdź czy to szef
+                    isAdmin = (user.email === BOSS_EMAIL);
+                    
+                    // Pobierz aktualne dane użytkownika z bazy
+                    const userDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
+                    if(userDoc.exists()) {
+                        APP_DATA.users[user.uid] = userDoc.data();
                     } else {
-                        currentUserRole = 'user';
-                        showToast("Zalogowano jako Użytkownik", "success");
+                        // Jeśli nie ma profilu w bazie (np. stare konto), stwórz go
+                        const initialData = { nick: user.email.split('@')[0], role: isAdmin ? 'admin' : 'user', email: user.email };
+                        await window.cloudAPI.saveUserProfile(user.uid, initialData);
+                        APP_DATA.users[user.uid] = initialData;
                     }
+
+                    // Pobierz listę wszystkich użytkowników (żeby widzieć ich nicki/avatary)
+                    const allUsers = await window.cloudAPI.fetchAllUsers();
+                    APP_DATA.users = { ...APP_DATA.users, ...allUsers };
+                    
+                    showToast(isAdmin ? "Witaj Szefie!" : "Zalogowano pomyślnie");
                 } else {
-                    currentUserRole = 'guest';
+                    isAdmin = false;
                 }
-                
-                checkUserRole();
-                updateAuthUI();
+                updateUI();
+                renderAll();
             });
         }
 
-        // --- HELPERY ---
-        function showToast(msg, type='success') {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            if(type === 'info') toast.style.borderColor = '#3b82f6';
-            toast.innerHTML = type==='error' ? `<i class="fas fa-exclamation-circle text-red-500 mr-2"></i> ${msg}` : `<i class="fas fa-check-circle text-green-500 mr-2"></i> ${msg}`;
-            container.appendChild(toast);
-            setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
-        }
+        // --- FUNKCJE UI ---
+        function updateUI() {
+            // Admin panel toggle
+            const adminElements = document.querySelectorAll('.admin-only');
+            adminElements.forEach(el => isAdmin ? el.classList.remove('hidden') : el.classList.add('hidden'));
 
-        function setLoading(btnId, isLoading) {
-            const btn = document.getElementById(btnId);
-            if(!btn) return;
-            if(isLoading) {
-                btn.dataset.originalText = btn.innerHTML;
-                btn.innerHTML = '<span class="spinner"></span>';
-                btn.disabled = true;
-            } else {
-                btn.innerHTML = btn.dataset.originalText;
-                btn.disabled = false;
-            }
-        }
-
-        function resizeImage(file, maxWidth, callback) {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const img = new Image();
-                img.onload = () => {
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    const ratio = Math.min(maxWidth / img.width, 1);
-                    canvas.width = img.width * ratio;
-                    canvas.height = img.height * ratio;
-                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                    callback(canvas.toDataURL(file.type, 0.7)); 
-                };
-                img.src = e.target.result;
-            };
-            reader.readAsDataURL(file);
-        }
-
-        function checkUserRole() {
-            // UI Admina
-            if(currentUserRole === 'admin') {
-                document.getElementById('nav-admin-btn').classList.remove('hidden');
-                document.getElementById('admin-bar').classList.remove('hidden');
-                document.getElementById('admin-badge').classList.remove('hidden');
-            } else {
-                document.getElementById('nav-admin-btn').classList.add('hidden');
-                document.getElementById('admin-bar').classList.add('hidden');
-                document.getElementById('admin-badge').classList.add('hidden');
-            }
-            
-            renderAdminUsers();
-        }
-
-        function saveToCloud() { updateAppData(APP_DATA); if (window.cloudAPI) window.cloudAPI.save(APP_DATA); }
-
-        function adminResetToDefaults() {
-            if(confirm("To wyczyści dane w CHMURZE. Kontynuować?")) {
-                APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
-                if(currentUser && currentUserRole === 'admin') {
-                     APP_DATA.userRoles[currentUser.email] = { role: 'admin', nick: 'Szef' };
-                }
-                saveToCloud(); renderAll(); showToast("Zresetowano bazę!");
-            }
-        }
-
-        // --- ZARZĄDZANIE PROFILEM ---
-        function updateAuthUI() {
-            // Pokaż/Ukryj odpowiednie przyciski w menu
+            // Navbar items
             if(currentUser) {
                 document.getElementById('user-menu-guest').classList.add('hidden');
                 document.getElementById('user-menu-logged').classList.remove('hidden');
+                // Avatar w nav
+                const myProfile = APP_DATA.users[currentUser.uid] || {};
+                document.getElementById('nav-user-avatar').src = myProfile.avatar || `https://ui-avatars.com/api/?name=${currentUser.email}&background=random`;
                 
-                document.getElementById('form-login').classList.add('hidden');
-                document.getElementById('auth-tabs').classList.add('hidden');
-                document.getElementById('user-profile-view').classList.remove('hidden');
-                
-                // Dane usera
-                if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
-                const userData = APP_DATA.userRoles[currentUser.email] || {};
-                const displayNick = userData.nick || currentUser.email.split('@')[0];
-                const displayAvatar = userData.avatar || `https://ui-avatars.com/api/?name=${displayNick}&background=8b5cf6&color=fff`;
-
-                document.getElementById('user-display-name').innerText = displayNick;
+                // Modal Profile View
+                document.getElementById('user-display-name').innerText = myProfile.nick || "Użytkownik";
                 document.getElementById('user-email-display').innerText = currentUser.email;
-                document.getElementById('user-avatar-img').src = displayAvatar;
-                document.getElementById('nav-user-avatar').src = displayAvatar;
+                document.getElementById('user-avatar-main').src = myProfile.avatar || document.getElementById('nav-user-avatar').src;
                 
-                // Wypełnij pola edycji
-                document.getElementById('edit-nick').value = displayNick;
-                document.getElementById('edit-avatar').value = userData.avatar || '';
+                // Form Fields
+                document.getElementById('edit-nick').value = myProfile.nick || "";
+                document.getElementById('edit-avatar').value = myProfile.avatar || "";
+                
+                document.getElementById('admin-badge').style.display = isAdmin ? 'inline-block' : 'none';
             } else {
                 document.getElementById('user-menu-guest').classList.remove('hidden');
                 document.getElementById('user-menu-logged').classList.add('hidden');
-
-                document.getElementById('form-login').classList.remove('hidden');
-                document.getElementById('auth-tabs').classList.remove('hidden');
-                document.getElementById('user-profile-view').classList.add('hidden');
             }
         }
 
-        function handleAvatarFile(event) {
-            const file = event.target.files[0];
-            if(file) resizeImage(file, 200, (base64) => { currentAvatarBase64 = base64; document.getElementById('edit-avatar').value = "Obraz wgrany (zapisz zmiany)"; });
-        }
-
-        async function handleUpdateProfile() {
-            if(!currentUser) return;
-            const newNick = document.getElementById('edit-nick').value;
-            const newAvatarUrl = currentAvatarBase64 || document.getElementById('edit-avatar').value;
-            const newPass = document.getElementById('edit-password').value;
-
-            // 1. Aktualizacja hasła (jeśli podano)
-            if(newPass) {
-                try {
-                    await window.cloudAPI.updateUserPass(newPass);
-                    showToast("Hasło zmienione!");
-                    document.getElementById('edit-password').value = '';
-                } catch(e) {
-                    showToast("Błąd hasła: " + e.message, "error");
-                    return; // Przerwij jeśli hasło nie przeszło
-                }
-            }
-
-            // 2. Aktualizacja danych publicznych (Nick/Avatar) w bazie
-            if(!APP_DATA.userRoles[currentUser.email]) APP_DATA.userRoles[currentUser.email] = { role: 'user' };
-            
-            APP_DATA.userRoles[currentUser.email].nick = newNick;
-            if(newAvatarUrl && newAvatarUrl !== "Obraz wgrany (zapisz zmiany)") {
-                APP_DATA.userRoles[currentUser.email].avatar = newAvatarUrl;
-            }
-
-            // Zapisz do bazy globalnej
-            try {
-                if(currentUserRole === 'admin') {
-                    await window.cloudAPI.save(APP_DATA);
-                    showToast("Profil zapisany!");
-                } else {
-                    updateAppData(APP_DATA);
-                    showToast("Zapisano (lokalnie/admin mode off)");
-                }
-                updateAuthUI();
-            } catch(e) {
-                showToast("Błąd zapisu danych", "error");
-            }
-        }
-
+        // --- AKCJE UŻYTKOWNIKA ---
         async function handleLogin() {
-            const email = document.getElementById('login-email').value;
-            const pass = document.getElementById('login-password').value;
-            if(!email || !pass) return showToast("Podaj email i hasło", "error");
-            
-            setLoading('btn-login-action', true);
+            setLoading('btn-login', true);
             try {
-                await window.cloudAPI.login(email, pass);
-                closeAuthModal(); 
-            } catch (e) { 
-                showToast("Błąd: " + e.message, "error"); 
-            } 
-            finally { 
-                setLoading('btn-login-action', false); // ZAWSZE wyłącz spinner
-            } 
+                await window.cloudAPI.login(document.getElementById('login-email').value, document.getElementById('login-pass').value);
+                closeModal();
+            } catch(e) { showToast("Błąd: " + e.message, "error"); }
+            setLoading('btn-login', false);
         }
 
         async function handleRegister() {
-            const nick = document.getElementById('reg-nick').value;
+            setLoading('btn-reg', true);
             const email = document.getElementById('reg-email').value;
-            const pass = document.getElementById('reg-password').value;
-            if(!nick || !email || !pass) return showToast("Wypełnij pola", "error");
-            setLoading('btn-reg-action', true);
+            const pass = document.getElementById('reg-pass').value;
+            const nick = document.getElementById('reg-nick').value;
             try {
-                await window.cloudAPI.register(email, pass);
-                if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
-                APP_DATA.userRoles[email] = { role: 'user', nick: nick };
-                
-                updateAppData(APP_DATA);
-                
-                // Zostawiamy otwarte, żeby user od razu widział profil i mógł zmienić avatar
-                updateAuthUI();
-                showToast("Konto założone! Witaj " + nick);
-            } catch (e) { showToast("Błąd: " + e.message, "error"); } 
-            finally { setLoading('btn-reg-action', false); }
+                const cred = await window.cloudAPI.register(email, pass);
+                // Tworzymy profil w bazie 'users'
+                await window.cloudAPI.saveUserProfile(cred.user.uid, {
+                    nick: nick,
+                    email: email,
+                    role: 'user',
+                    avatar: '',
+                    joined: new Date().toISOString()
+                });
+                closeModal();
+                showToast("Konto utworzone!");
+            } catch(e) { showToast("Błąd: " + e.message, "error"); }
+            setLoading('btn-reg', false);
         }
 
-        async function handleLogout() {
-            await window.cloudAPI.logout();
-            currentUser = null; currentUserRole = 'guest';
-            updateAuthUI(); closeAuthModal(); switchTab('feed'); showToast("Wylogowano");
+        async function saveProfileChanges() {
+            if(!currentUser) return;
+            const newNick = document.getElementById('edit-nick').value;
+            const newAvatar = currentUploadBase64 || document.getElementById('edit-avatar').value;
+            const newPass = document.getElementById('edit-pass').value;
+
+            if(newPass) {
+                try { await window.cloudAPI.updatePass(newPass); showToast("Hasło zmienione"); }
+                catch(e) { showToast("Błąd hasła: " + e.message, "error"); return; }
+            }
+
+            const updateData = { nick: newNick };
+            if(newAvatar) updateData.avatar = newAvatar;
+
+            await window.cloudAPI.saveUserProfile(currentUser.uid, updateData);
+            showToast("Profil zaktualizowany!");
+            currentUploadBase64 = ''; // Reset
         }
 
-        // --- RENDER ---
-        function renderAll() { loadUserProfile(); renderBlog(); renderShop(); renderAdminUsers(); updateCart(); }
+        // --- ADMIN ACTIONS ---
+        function adminAddPost() {
+            if(!isAdmin) return;
+            const title = document.getElementById('admin-post-title').value;
+            if(!title) return showToast("Brak tytułu", "error");
+            
+            const newPost = {
+                id: Date.now(),
+                title: title,
+                text: document.getElementById('admin-post-text').value,
+                type: document.getElementById('admin-post-type').value,
+                image: currentUploadBase64,
+                videoUrl: document.getElementById('admin-post-video').value,
+                date: new Date().toISOString(),
+                likes: 0, likedBy: [], comments: []
+            };
+            
+            APP_DATA.posts.unshift(newPost);
+            window.cloudAPI.saveContent(APP_DATA);
+            showToast("Opublikowano");
+            currentUploadBase64 = '';
+        }
 
-        function loadUserProfile() {
+        function adminAddProduct() {
+            if(!isAdmin) return;
+            const name = document.getElementById('admin-prod-name').value;
+            if(!name) return;
+            
+            const prod = {
+                id: Date.now(),
+                name: name,
+                price: document.getElementById('admin-prod-price').value,
+                img: currentUploadBase64 || 'https://via.placeholder.com/300',
+                label: document.getElementById('admin-prod-label').value
+            };
+            APP_DATA.products.push(prod);
+            window.cloudAPI.saveContent(APP_DATA);
+            showToast("Produkt dodany");
+            currentUploadBase64 = '';
+        }
+
+        // --- RENDERERS ---
+        function renderAll() {
+            renderBlog();
+            renderShop();
+            renderAdminUsers();
+            
+            // Profil Info
             const config = APP_DATA.config;
-            const fullNameHTML = `${config.firstName}<span class="text-brand-purple">${config.lastName}</span>`;
-            document.getElementById('nav-logo').innerHTML = fullNameHTML;
-            document.getElementById('profile-name').innerHTML = fullNameHTML;
+            document.getElementById('nav-logo').innerHTML = `${config.firstName}<span class="text-brand-purple">${config.lastName}</span>`;
+            document.getElementById('profile-name').innerHTML = document.getElementById('nav-logo').innerHTML;
             document.getElementById('profile-bio').innerText = config.bio;
-            document.querySelectorAll('#profile-avatar, #about-avatar').forEach(img => img.src = config.avatarUrl);
+            document.getElementById('profile-avatar').src = config.avatarUrl;
+            
             document.getElementById('stat-yt').innerText = config.stats.youtube;
             document.getElementById('stat-ig').innerText = config.stats.instagram;
-            document.getElementById('stat-projects').innerText = config.stats.projects;
-            let socialHTML = '';
-            if(config.links.instagram) socialHTML += `<a href="${config.links.instagram}" target="_blank"><i class="fab fa-instagram hover:text-brand-pink transition-colors"></i></a>`;
-            document.getElementById('social-icons').innerHTML = socialHTML;
+            document.getElementById('stat-proj').innerText = config.stats.projects;
         }
 
         function renderBlog() {
             const container = document.getElementById('blog-container');
-            const isAdmin = currentUserRole === 'admin';
-            if(!APP_DATA.posts.length) { container.innerHTML = '<div class="text-center text-gray-400 w-full col-span-3 py-10">Brak postów.</div>'; return; }
-            container.innerHTML = APP_DATA.posts.map(post => {
-                const deleteBtn = isAdmin ? `<button onclick="deletePost(${post.id})" class="delete-btn absolute top-2 right-2 bg-red-500 text-white w-8 h-8 rounded-full shadow-lg hover:bg-red-600 z-10 flex items-center justify-center transition-all"><i class="fas fa-trash text-sm"></i></button>` : '';
-                const isLiked = post.likedBy && currentUser && post.likedBy.includes(currentUser.email);
-                const likeIconClass = isLiked ? 'fas text-red-500' : 'far text-gray-400';
-                
+            if(!APP_DATA.posts?.length) { container.innerHTML = '<div class="text-center p-10 text-gray-400">Brak postów</div>'; return; }
+            
+            container.innerHTML = APP_DATA.posts.map(p => {
                 let media = '';
-                if(post.type === 'video') media = `<div class="relative mb-3 cursor-pointer group rounded-xl overflow-hidden shadow-sm" onclick="playVideo('${post.videoUrl}')"><img src="${post.thumbnail}" class="w-full h-auto object-cover group-hover:scale-105 transition-transform duration-500"><div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors"><div class="w-12 h-12 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center group-hover:scale-110 transition-transform"><i class="fas fa-play text-white ml-1"></i></div></div></div>`;
-                else if(post.type === 'photo') media = `<div class="rounded-xl overflow-hidden shadow-sm mb-3"><img src="${post.image}" class="w-full h-auto hover:scale-105 transition-transform duration-500"></div>`;
+                if(p.type === 'photo' && p.image) media = `<img src="${p.image}" class="w-full rounded-lg mb-3">`;
+                if(p.type === 'video') media = `<div class="bg-black text-white p-4 rounded-lg mb-3 text-center cursor-pointer" onclick="window.open('${p.videoUrl}', '_blank')"><i class="fas fa-play mb-2 block"></i>Otwórz Wideo</div>`;
 
-                let commentsHTML = (post.comments || []).map((c, i) => {
-                    // Znajdź avatar autora komentarza w bazie userRoles
-                    let authorAvatar = 'https://ui-avatars.com/api/?name='+c.author+'&background=random&color=fff';
-                    // Szukamy usera po nicku (proste wyszukiwanie, w dużej bazie byłoby po ID)
-                    const userEmail = Object.keys(APP_DATA.userRoles).find(email => APP_DATA.userRoles[email].nick === c.author);
-                    if(userEmail && APP_DATA.userRoles[userEmail].avatar) authorAvatar = APP_DATA.userRoles[userEmail].avatar;
-
-                    return `<div class="text-sm mb-3 pb-2 border-b border-gray-100 last:border-0 relative group/comment flex gap-3">
-                        <img src="${authorAvatar}" class="w-8 h-8 rounded-full object-cover bg-gray-200">
-                        <div class="flex-1">
-                            <span class="font-bold text-black mr-2 block text-xs">${c.author}</span>
-                            <span class="text-gray-600 block">${c.text}</span>
-                        </div>
-                        ${isAdmin ? `<button onclick="deleteComment(${post.id}, ${i})" class="absolute right-0 top-0 text-red-400 hover:text-red-600 opacity-0 group-hover/comment:opacity-100 transition-opacity"><i class="fas fa-times"></i></button>` : ''}
-                    </div>`;
+                // Komentarze
+                const commentsHtml = (p.comments || []).map((c, i) => {
+                    // Szukamy avatara usera w załadowanych userach
+                    // c.author to u nas UID (najlepiej) lub nick. Przyjmijmy że zapisujemy UID i Nick.
+                    // Tutaj uproszczenie: w starej wersji było nick.
+                    return `<div class="text-xs border-b border-gray-100 py-1 flex justify-between group">
+                        <span><b>${c.author}:</b> ${c.text}</span>
+                        ${isAdmin ? `<i class="fas fa-times text-red-400 cursor-pointer opacity-0 group-hover:opacity-100" onclick="deleteComment(${p.id}, ${i})"></i>` : ''}
+                    </div>`
                 }).join('');
 
-                return `<div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-soft break-inside-avoid mb-6 relative group hover:shadow-lg transition-shadow">${deleteBtn} ${media}<h3 class="font-bold mb-2 text-lg text-black">${post.title}</h3><p class="text-sm text-gray-600 mb-4 leading-relaxed">${post.text || ''}</p><div class="flex justify-between items-center text-xs text-gray-400 pt-4 border-t border-gray-50"><span class="flex items-center"><i class="far fa-clock mr-1"></i> ${new Date(post.date).toLocaleDateString()}</span><div class="flex gap-3"><button onclick="toggleComments(${post.id})" class="flex items-center gap-1 hover:text-brand-purple transition-colors bg-gray-50 px-3 py-1.5 rounded-full"><i class="far fa-comment-dots text-base"></i> <span class="font-bold">${post.comments ? post.comments.length : 0}</span></button><button onclick="toggleLike(${post.id})" class="flex items-center gap-1 hover:bg-red-50 px-3 py-1.5 rounded-full transition-colors group bg-gray-50"><i class="${likeIconClass} text-base group-active:scale-125 transition-transform"></i><span class="font-bold">${post.likes || 0}</span></button></div></div><div id="comments-${post.id}" class="hidden mt-4 pt-4 border-t border-gray-50 bg-gray-50/50 -mx-5 -mb-5 p-5 rounded-b-2xl"><div class="max-h-40 overflow-y-auto pr-2 mb-3 no-scrollbar">${commentsHTML || '<p class="text-xs text-gray-400 italic">Brak komentarzy.</p>'}</div><div class="flex gap-2"><input id="input-comment-${post.id}" class="bg-white border border-gray-200 w-full text-sm p-2 rounded-lg text-black focus:border-brand-purple outline-none shadow-sm" placeholder="Napisz komentarz..."><button onclick="addComment(${post.id})" class="text-brand-purple bg-white p-2 rounded-lg border border-gray-200 hover:bg-brand-purple hover:text-white transition-colors shadow-sm"><i class="fas fa-paper-plane"></i></button></div></div></div>`;
+                return `
+                <div class="bg-white p-5 rounded-2xl shadow-soft mb-6 break-inside-avoid relative group">
+                    ${isAdmin ? `<button onclick="deletePost(${p.id})" class="absolute top-2 right-2 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i class="fas fa-trash"></i></button>` : ''}
+                    ${media}
+                    <h3 class="font-bold text-lg text-black">${p.title}</h3>
+                    <p class="text-sm text-gray-600 mt-1">${p.text || ''}</p>
+                    <div class="flex justify-between items-center mt-4 text-xs text-gray-400">
+                        <span>${new Date(p.date).toLocaleDateString()}</span>
+                        <div class="flex gap-3">
+                            <button onclick="document.getElementById('comments-${p.id}').classList.toggle('hidden')"><i class="far fa-comment"></i> ${p.comments?.length || 0}</button>
+                            <button onclick="likePost(${p.id})" class="${(p.likedBy||[]).includes(currentUser?.uid) ? 'text-red-500' : ''}"><i class="far fa-heart"></i> ${p.likes || 0}</button>
+                        </div>
+                    </div>
+                    <div id="comments-${p.id}" class="hidden mt-3 pt-3 border-t border-gray-100">
+                        <div class="max-h-32 overflow-y-auto mb-2">${commentsHtml}</div>
+                        ${currentUser ? `<div class="flex gap-2"><input id="comment-in-${p.id}" class="w-full bg-gray-50 border p-1 rounded text-xs text-black" placeholder="Napisz..."><button onclick="addComment(${p.id})" class="text-brand-purple"><i class="fas fa-paper-plane"></i></button></div>` : ''}
+                    </div>
+                </div>`;
             }).join('');
         }
 
-        // --- AKCJE ---
-        function toggleLike(id) {
-            if(!currentUser) return showToast("Zaloguj się!", "error");
-            const post = APP_DATA.posts.find(p => p.id === id);
-            if(post) {
-                if(!post.likedBy) post.likedBy = [];
-                const idx = post.likedBy.indexOf(currentUser.email);
-                if (idx === -1) { post.likedBy.push(currentUser.email); post.likes = (post.likes || 0) + 1; }
-                else { post.likedBy.splice(idx, 1); post.likes = Math.max(0, (post.likes || 1) - 1); }
-                saveToCloud(); renderBlog();
-            }
-        }
-
-        function addComment(id) {
-            if(!currentUser) return showToast("Zaloguj się!", "error");
-            const input = document.getElementById(`input-comment-${id}`);
-            if(!input.value) return;
-            const post = APP_DATA.posts.find(p => p.id === id);
-            if(post) {
-                if(!post.comments) post.comments = [];
-                const userData = APP_DATA.userRoles[currentUser.email] || {};
-                const nick = userData.nick || currentUser.email.split('@')[0];
-                
-                post.comments.push({author: nick, text: input.value});
-                saveToCloud(); renderBlog(); input.value = ''; showToast("Dodano komentarz");
-            }
-        }
-
-        function adminAddPost() {
-            const title = document.getElementById('admin-post-title').value;
-            if(!title) return showToast("Brak tytułu", "error");
-            setLoading('btn-post', true); 
-            const newPost = {
-                id: Date.now(), type: document.getElementById('admin-post-type').value,
-                title: title, text: document.getElementById('admin-post-text').value,
-                image: currentPostImageBase64, thumbnail: currentPostImageBase64,
-                videoUrl: document.getElementById('admin-post-video').value,
-                date: new Date().toISOString(), likes: 0, likedBy: [], comments: []
-            };
-            APP_DATA.posts.unshift(newPost);
-            saveToCloud(); renderAll(); showToast("Opublikowano!");
-            setLoading('btn-post', false);
-        }
-
-        function adminAddProduct() {
-            const name = document.getElementById('admin-prod-name').value;
-            if(!name) return showToast("Brak nazwy", "error");
-            setLoading('btn-prod', true);
-            APP_DATA.products.push({
-                id: Date.now(), name: name, price: parseFloat(document.getElementById('admin-prod-price').value),
-                img: currentProductImageBase64 || 'https://via.placeholder.com/400x500',
-                label: document.getElementById('admin-prod-label').value
-            });
-            saveToCloud(); renderAll(); showToast("Produkt dodany!");
-            setLoading('btn-prod', false);
-        }
-
-        function renderShop() {
-            const isAdmin = currentUserRole === 'admin';
-            document.getElementById('products-container').innerHTML = APP_DATA.products.map(p => `
-                <div class="group relative">
-                    ${isAdmin ? `<button onclick="deleteProduct(${p.id})" class="absolute top-2 right-2 z-20 bg-red-600 text-white w-8 h-8 flex items-center justify-center rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700"><i class="fas fa-trash"></i></button>` : ''}
-                    <div class="relative aspect-[4/5] bg-card-bg rounded-lg overflow-hidden mb-3">
-                        ${p.label ? `<span class="absolute top-2 left-2 bg-white text-black text-[10px] font-bold px-2 py-1 uppercase z-10">${p.label}</span>` : ''}
-                        <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
-                        <button onclick="addToCart(${p.id})" class="absolute bottom-4 left-4 right-4 bg-brand-purple text-white font-bold py-3 rounded text-sm translate-y-[150%] opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all shadow-lg hover:bg-brand-pink">DODAJ DO KOSZYKA</button>
-                    </div>
-                    <h3 class="font-bold text-sm text-black">${p.name}</h3>
-                    <p class="text-gray-400 text-sm">${p.price} PLN</p>
-                </div>`).join('');
-        }
-
-        function addToCart(id) {
-            const product = APP_DATA.products.find(p => p.id === id);
-            const existing = cart.find(i => i.id === id);
-            if(existing) existing.qty++; else cart.push({...product, qty: 1});
-            updateCart(); toggleCart(true); showToast("Dodano do koszyka");
-        }
-        function removeFromCart(id) { cart = cart.filter(i => i.id !== id); updateCart(); }
-        function updateCart() {
-            const container = document.getElementById('cart-items');
-            if(cart.length === 0) container.innerHTML = '<div class="text-center text-gray-400 py-10">Pusto</div>';
-            else container.innerHTML = cart.map(item => `<div class="flex items-center justify-between bg-gray-50 p-3 rounded-xl mb-2"><div class="flex-1 text-sm font-medium text-black">${item.name} (${item.qty})</div><button onclick="removeFromCart(${item.id})" class="text-red-400 hover:text-red-600"><i class="fas fa-trash"></i></button></div>`).join('');
-            const total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
-            document.getElementById('cart-total').innerText = total.toFixed(2) + ' PLN';
-            const count = cart.reduce((sum, i) => sum + i.qty, 0);
-            [document.getElementById('cart-badge'), document.getElementById('cart-badge-mobile')].forEach(b => { b.innerText = count; count > 0 ? b.classList.remove('scale-0') : b.classList.add('scale-0'); });
-        }
-
-        function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if(file) resizeImage(file, 800, (base64) => { currentPostImageBase64 = base64; document.getElementById('file-label').innerHTML = "Gotowe"; });
-        }
-        function handleProductFileSelect(event) {
-            const file = event.target.files[0];
-            if(file) resizeImage(file, 500, (base64) => { currentProductImageBase64 = base64; document.getElementById('prod-file-label').innerHTML = "Gotowe"; });
-        }
-
-        function toggleComments(id) { document.getElementById(`comments-${id}`).classList.toggle('hidden'); }
-        function deletePost(id) { if(confirm("Usunąć?")) { APP_DATA.posts = APP_DATA.posts.filter(p => p.id !== id); saveToCloud(); renderBlog(); } }
-        function deleteProduct(id) { if(confirm("Usunąć?")) { APP_DATA.products = APP_DATA.products.filter(p => p.id !== id); saveToCloud(); renderAll(); } }
-        function deleteComment(pid, idx) { if(confirm("Usunąć?")) { APP_DATA.posts.find(p=>p.id===pid).comments.splice(idx,1); saveToCloud(); renderBlog(); } }
         function renderAdminUsers() {
-            if(currentUserRole !== 'admin') return;
-            const list = document.getElementById('admin-users-list');
-            document.getElementById('admin-user-count').innerText = Object.keys(APP_DATA.userRoles).length;
-            list.innerHTML = Object.entries(APP_DATA.userRoles).map(([email, data]) => `
-                <tr class="border-b border-gray-100 hover:bg-gray-50"><td class="p-3"><div class="font-bold text-black">${data.nick}</div><div class="text-xs text-gray-400">${email}</div></td><td class="p-3"><span class="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded uppercase font-bold">${data.role}</span></td><td class="p-3 text-right">${data.role!=='admin'?`<button onclick="makeAdmin('${email}')" class="text-xs text-brand-purple mr-2">DAJ ADMINA</button>`:`<button onclick="removeAdmin('${email}')" class="text-xs text-gray-500 mr-2">ZABIERZ</button>`}</td></tr>`).join('');
+            if(!isAdmin) return;
+            const tbody = document.getElementById('admin-users-list');
+            if(!tbody) return;
+            
+            // APP_DATA.users zawiera mapę UID -> dane
+            const users = Object.entries(APP_DATA.users || {});
+            document.getElementById('admin-user-count').innerText = users.length;
+            
+            tbody.innerHTML = users.map(([uid, u]) => `
+                <tr class="border-b border-gray-100 text-sm">
+                    <td class="p-3">
+                        <div class="font-bold text-black">${u.nick || 'Bez nicku'}</div>
+                        <div class="text-xs text-gray-400">${u.email || '...'}</div>
+                    </td>
+                    <td class="p-3">${u.role || 'user'}</td>
+                    <td class="p-3 text-right text-xs text-gray-400">${uid.substr(0,5)}...</td>
+                </tr>
+            `).join('');
         }
-        function makeAdmin(email) { APP_DATA.userRoles[email].role='admin'; saveToCloud(); renderAdminUsers(); }
-        function removeAdmin(email) { APP_DATA.userRoles[email].role='user'; saveToCloud(); renderAdminUsers(); }
-        function adminUpdateStats() { APP_DATA.config.stats.instagram = document.getElementById('admin-stat-ig').value; APP_DATA.config.stats.youtube = document.getElementById('admin-stat-yt').value; APP_DATA.config.stats.projects = document.getElementById('admin-stat-proj').value; saveToCloud(); renderAll(); showToast("Zaktualizowano!"); }
-        function handleAuthClick() { document.getElementById('auth-modal').classList.remove('hidden'); switchAuthTab('login'); }
-        function closeAuthModal() { document.getElementById('auth-modal').classList.add('hidden'); }
-        function switchAuthTab(tab) { if(tab==='login'){document.getElementById('form-login').classList.remove('hidden');document.getElementById('form-register').classList.add('hidden');}else{document.getElementById('form-login').classList.add('hidden');document.getElementById('form-register').classList.remove('hidden');}}
-        function switchTab(tabId) { document.querySelectorAll('main > div[id^="view-"]').forEach(el=>el.classList.add('hidden')); document.getElementById(`view-${tabId}`).classList.remove('hidden'); }
-        function toggleCart(force) { const m=document.getElementById('cart-modal');const c=document.getElementById('cart-content');if(m.classList.contains('hidden')||force){m.classList.remove('hidden');setTimeout(()=>c.style.transform='translateX(0)',10);}else{c.style.transform='translateX(100%)';setTimeout(()=>m.classList.add('hidden'),300);}}
-        function playVideo(url){const id=url.split('v=')[1]?url.split('v=')[1].split('&')[0]:url.split('/').pop();document.getElementById('video-frame').src=`https://www.youtube.com/embed/${id}?autoplay=1`;document.getElementById('video-modal').classList.remove('hidden');}
-        function closeVideo(){document.getElementById('video-modal').classList.add('hidden');document.getElementById('video-frame').src='';}
-        
-        // Inicjalizacja przy starcie
-        renderAll();
+
+        // --- AKCJE LOGIKI ---
+        function likePost(pid) {
+            if(!currentUser) return showToast("Zaloguj się", "error");
+            const p = APP_DATA.posts.find(x => x.id === pid);
+            if(!p.likedBy) p.likedBy = [];
+            const uid = currentUser.uid;
+            if(p.likedBy.includes(uid)) {
+                p.likedBy = p.likedBy.filter(x => x !== uid);
+                p.likes--;
+            } else {
+                p.likedBy.push(uid);
+                p.likes++;
+            }
+            window.cloudAPI.saveContent(APP_DATA);
+        }
+
+        function addComment(pid) {
+            const txt = document.getElementById(`comment-in-${pid}`).value;
+            if(!txt) return;
+            const p = APP_DATA.posts.find(x => x.id === pid);
+            if(!p.comments) p.comments = [];
+            
+            const myNick = APP_DATA.users[currentUser.uid]?.nick || "Anonim";
+            p.comments.push({ author: myNick, text: txt, uid: currentUser.uid });
+            window.cloudAPI.saveContent(APP_DATA);
+        }
+
+        function deletePost(pid) {
+            if(confirm("Usunąć?")) {
+                APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== pid);
+                window.cloudAPI.saveContent(APP_DATA);
+            }
+        }
+        function deleteComment(pid, idx) {
+            const p = APP_DATA.posts.find(x => x.id === pid);
+            p.comments.splice(idx, 1);
+            window.cloudAPI.saveContent(APP_DATA);
+        }
+
+        // --- UTILS ---
+        function handleFile(e) {
+            const f = e.target.files[0];
+            if(!f) return;
+            const r = new FileReader();
+            r.onload = (ev) => {
+                // Resize logic simplified
+                const img = new Image();
+                img.onload = () => {
+                    const c = document.createElement('canvas');
+                    const ctx = c.getContext('2d');
+                    const scale = Math.min(800/img.width, 1);
+                    c.width = img.width * scale;
+                    c.height = img.height * scale;
+                    ctx.drawImage(img,0,0,c.width,c.height);
+                    currentUploadBase64 = c.toDataURL('image/jpeg', 0.7);
+                    showToast("Zdjęcie gotowe");
+                };
+                img.src = ev.target.result;
+            };
+            r.readAsDataURL(f);
+        }
+
+        function showToast(msg, type='success') {
+            const t = document.createElement('div');
+            t.className = `toast ${type}`;
+            t.innerText = msg;
+            document.getElementById('toast-container').appendChild(t);
+            setTimeout(() => t.remove(), 3000);
+        }
+        function setLoading(id, s) { 
+            const b = document.getElementById(id); 
+            if(s) { b.innerHTML = '...'; b.disabled=true; } 
+            else { b.innerHTML = b.dataset.txt || 'OK'; b.disabled=false; } 
+        }
+        function switchTab(t) {
+            document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden'));
+            document.getElementById('view-'+t).classList.remove('hidden');
+        }
+        function toggleCart() { document.getElementById('cart-modal').classList.toggle('hidden'); }
+        function handleAuthClick() { 
+            if(currentUser) {
+                // Show profile modal
+                document.getElementById('auth-modal').classList.remove('hidden');
+                document.getElementById('user-view').classList.remove('hidden');
+                document.getElementById('login-view').classList.add('hidden');
+            } else {
+                document.getElementById('auth-modal').classList.remove('hidden');
+                document.getElementById('user-view').classList.add('hidden');
+                document.getElementById('login-view').classList.remove('hidden');
+            }
+        }
+        function closeModal() { document.getElementById('auth-modal').classList.add('hidden'); }
+        function toggleAuthMode(mode) {
+            if(mode === 'reg') {
+                document.getElementById('form-login').classList.add('hidden');
+                document.getElementById('form-register').classList.remove('hidden');
+            } else {
+                document.getElementById('form-login').classList.remove('hidden');
+                document.getElementById('form-register').classList.add('hidden');
+            }
+        }
     </script>
+
+    <!-- STYLE UŻYTKOWE -->
+    <style>
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+        .toast { background: white; color: #111; padding: 10px 20px; border-left: 4px solid #8b5cf6; border-radius: 8px; shadow: 0 5px 15px rgba(0,0,0,0.1); animation: slideIn 0.3s; font-size: 14px; font-weight: 500; }
+        .toast.error { border-left-color: #ef4444; }
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .masonry-grid { column-count: 1; gap: 1.5rem; }
+        @media(min-width: 768px) { .masonry-grid { column-count: 2; } }
+        @media(min-width: 1024px) { .masonry-grid { column-count: 3; } }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900 font-sans">
+
+    <!-- CLOUD STATUS -->
+    <div class="fixed bottom-2 left-2 bg-white px-3 py-1 rounded-full text-[10px] text-gray-400 border shadow flex items-center gap-2 z-50">
+        <div class="w-2 h-2 rounded-full bg-gray-300" id="cloud-status-text"></div> Stan
+    </div>
+    <div id="toast-container"></div>
+
+    <!-- ADMIN BAR -->
+    <div id="admin-bar" class="admin-only hidden bg-gradient-to-r from-purple-600 to-pink-500 text-white text-center text-xs font-bold py-1">PANEL SZEFA</div>
+
+    <!-- NAV -->
+    <nav class="sticky top-0 bg-white/90 backdrop-blur border-b border-gray-200 z-40 h-16 flex items-center justify-between px-4 lg:px-8">
+        <div id="nav-logo" class="font-display font-black text-2xl tracking-tighter">HUB</div>
+        <div class="flex gap-6 text-sm font-bold text-gray-500">
+            <button onclick="switchTab('feed')" class="hover:text-purple-600">VLOG</button>
+            <button onclick="switchTab('shop')" class="hover:text-purple-600">SKLEP</button>
+            <button onclick="switchTab('admin')" class="admin-only hidden text-red-500 hover:text-red-700">ZARZĄDZAJ</button>
+        </div>
+        <div class="flex gap-4 items-center">
+            <!-- Ikona usera -->
+            <div id="user-menu-guest" class="cursor-pointer" onclick="handleAuthClick()"><i class="far fa-user text-xl"></i></div>
+            <div id="user-menu-logged" class="hidden cursor-pointer" onclick="handleAuthClick()">
+                <img id="nav-user-avatar" class="w-8 h-8 rounded-full border bg-gray-100 object-cover">
+            </div>
+            
+            <div class="relative cursor-pointer" onclick="toggleCart()">
+                <i class="fas fa-shopping-bag text-xl"></i>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto p-4 pt-8 pb-20">
+        
+        <!-- FEED -->
+        <div id="view-feed">
+            <div class="flex flex-col md:flex-row gap-8 mb-12 items-center md:items-start">
+                <img id="profile-avatar" class="w-32 h-32 rounded-full border-4 border-white shadow-lg object-cover">
+                <div class="flex-1 text-center md:text-left">
+                    <h1 id="profile-name" class="text-4xl font-display font-black mb-2">...</h1>
+                    <p id="profile-bio" class="text-gray-500 max-w-md">...</p>
+                </div>
+                <div class="flex gap-6 text-center">
+                    <div><div id="stat-yt" class="text-2xl font-black">-</div><div class="text-[10px] text-gray-400">YOUTUBE</div></div>
+                    <div><div id="stat-ig" class="text-2xl font-black">-</div><div class="text-[10px] text-gray-400">INSTA</div></div>
+                    <div><div id="stat-proj" class="text-2xl font-black">-</div><div class="text-[10px] text-gray-400">PROJEKTY</div></div>
+                </div>
+            </div>
+            <div id="blog-container" class="masonry-grid"></div>
+        </div>
+
+        <!-- SHOP -->
+        <div id="view-shop" class="hidden">
+            <h2 class="text-center text-3xl font-black mb-8">SKLEP</h2>
+            <div id="products-container" class="grid grid-cols-2 md:grid-cols-3 gap-4"></div>
+        </div>
+
+        <!-- ADMIN -->
+        <div id="view-admin" class="hidden admin-only">
+            <div class="grid md:grid-cols-2 gap-8">
+                <div class="bg-white p-6 rounded-2xl border">
+                    <h3 class="font-bold mb-4">Dodaj Post</h3>
+                    <input id="admin-post-title" class="w-full border p-2 rounded mb-2" placeholder="Tytuł">
+                    <textarea id="admin-post-text" class="w-full border p-2 rounded mb-2" placeholder="Treść"></textarea>
+                    <select id="admin-post-type" class="w-full border p-2 rounded mb-2">
+                        <option value="status">Tekst</option>
+                        <option value="photo">Zdjęcie</option>
+                        <option value="video">Wideo</option>
+                    </select>
+                    <input type="file" onchange="handleFile(event)" class="mb-2 text-xs">
+                    <input id="admin-post-video" class="w-full border p-2 rounded mb-2" placeholder="Link YT">
+                    <button onclick="adminAddPost()" class="w-full bg-purple-600 text-white font-bold p-2 rounded">Publikuj</button>
+                </div>
+                
+                <div class="bg-white p-6 rounded-2xl border">
+                    <h3 class="font-bold mb-4">Użytkownicy (<span id="admin-user-count">0</span>)</h3>
+                    <div class="overflow-y-auto max-h-60">
+                        <table class="w-full text-left">
+                            <tbody id="admin-users-list"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-2xl border">
+                    <h3 class="font-bold mb-4">Dodaj Produkt</h3>
+                    <input id="admin-prod-name" class="w-full border p-2 rounded mb-2" placeholder="Nazwa">
+                    <input id="admin-prod-price" class="w-full border p-2 rounded mb-2" placeholder="Cena">
+                    <input id="admin-prod-label" class="w-full border p-2 rounded mb-2" placeholder="Label">
+                    <button onclick="adminAddProduct()" class="w-full bg-green-600 text-white font-bold p-2 rounded">Dodaj</button>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- AUTH MODAL -->
+    <div id="auth-modal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center hidden p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 relative">
+            <button onclick="closeModal()" class="absolute top-4 right-4 text-gray-400 hover:text-black"><i class="fas fa-times"></i></button>
+            
+            <!-- LOGIN VIEW -->
+            <div id="login-view">
+                <div class="flex border-b mb-6">
+                    <button onclick="toggleAuthMode('login')" class="flex-1 pb-2 border-b-2 border-purple-600 font-bold">Logowanie</button>
+                    <button onclick="toggleAuthMode('reg')" class="flex-1 pb-2 text-gray-400">Rejestracja</button>
+                </div>
+                
+                <div id="form-login">
+                    <input id="login-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
+                    <input id="login-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło">
+                    <button id="btn-login" onclick="handleLogin()" class="w-full bg-purple-600 text-white font-bold p-3 rounded hover:bg-purple-700">ZALOGUJ</button>
+                </div>
+
+                <div id="form-register" class="hidden">
+                    <input id="reg-nick" class="w-full border p-3 rounded mb-3" placeholder="Nick">
+                    <input id="reg-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
+                    <input id="reg-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło (min 6 znaków)">
+                    <button id="btn-reg" onclick="handleRegister()" class="w-full bg-black text-white font-bold p-3 rounded hover:bg-gray-800">ZAŁÓŻ KONTO</button>
+                </div>
+            </div>
+
+            <!-- USER PROFILE VIEW -->
+            <div id="user-view" class="hidden text-center">
+                <h2 class="font-bold text-xl mb-4">Twój Profil</h2>
+                <img id="user-avatar-main" class="w-24 h-24 rounded-full mx-auto mb-2 border bg-gray-100 object-cover">
+                <h3 id="user-display-name" class="font-bold text-lg">...</h3>
+                <p id="user-email-display" class="text-xs text-gray-400 mb-4">...</p>
+                
+                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-100 text-red-600 text-xs font-bold px-2 py-1 rounded border border-red-200">PANEL ADMINISTRATORA DOSTĘPNY</span></div>
+
+                <div class="text-left bg-gray-50 p-4 rounded-xl mb-4">
+                    <p class="text-xs font-bold text-gray-400 uppercase mb-2">Edytuj dane</p>
+                    <input id="edit-nick" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Nick">
+                    <input id="edit-avatar" class="w-full border p-2 rounded mb-2 text-sm" placeholder="URL Avatara">
+                    <input type="file" onchange="handleFile(event)" class="text-xs mb-2">
+                    <input id="edit-pass" type="password" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Nowe hasło">
+                    <button onclick="saveProfileChanges()" class="w-full bg-gray-200 text-gray-800 font-bold p-2 rounded text-xs hover:bg-gray-300">ZAPISZ ZMIANY</button>
+                </div>
+
+                <button onclick="window.cloudAPI.logout(); closeModal();" class="w-full border border-red-200 text-red-500 font-bold p-2 rounded hover:bg-red-50">WYLOGUJ</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CART -->
+    <div id="cart-modal" class="hidden fixed inset-0 z-50 flex justify-end">
+        <div class="absolute inset-0 bg-black/50" onclick="toggleCart()"></div>
+        <div class="bg-white w-full max-w-md h-full relative p-6 shadow-2xl">
+            <h2 class="font-black text-2xl mb-6">KOSZYK</h2>
+            <p class="text-gray-400">Pusto...</p>
+        </div>
+    </div>
+
 </body>
 </html>
