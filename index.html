@@ -39,7 +39,7 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        // ⚠️ WAŻNE: To jest tylko do lokalnego sprawdzenia. Prawdziwe zabezpieczenie jest w Firebase Rules.
+        // --- 👑 EMAIL SZEFA (Zgodny z Firebase Rules) ---
         const BOSS_EMAIL = "adrianniekil@gmail.com";
 
         let app, auth, db;
@@ -70,13 +70,12 @@
         let currentUser = null;
         let isAdmin = false;
         let uploadBuffer = '';
-        let currentProductView = null; // Aktualnie oglądany produkt
+        let currentProductView = null; 
 
         // --- SYNCHRONIZACJA ---
         function startSync() {
             if(!db) return;
 
-            // 1. Główna treść (Posty, Produkty)
             const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
             onSnapshot(mainRef, (snap) => {
                 document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
@@ -88,22 +87,11 @@
                 }
             });
 
-            // 2. Interakcje (Lajki, Komentarze)
             const metaRef = collection(db, 'projects', 'ub-tworcy-adrion', 'posts_meta');
             onSnapshot(metaRef, (snap) => {
                 snap.forEach(doc => INTERACTIONS[doc.id] = doc.data());
                 refreshView();
             });
-
-            // 3. Zamówienia (Tylko Admin)
-            if(isAdmin) {
-                const ordersRef = collection(db, 'projects', 'ub-tworcy-adrion', 'orders');
-                onSnapshot(ordersRef, (snap) => {
-                    ORDERS_CACHE = [];
-                    snap.forEach(doc => ORDERS_CACHE.push({id: doc.id, ...doc.data()}));
-                    renderAdminOrders();
-                });
-            }
         }
 
         // --- API ---
@@ -111,6 +99,7 @@
             login: (e, p) => signInWithEmailAndPassword(auth, e, p),
             reg: (e, p) => createUserWithEmailAndPassword(auth, e, p),
             out: () => signOut(auth),
+            updatePass: (p) => updatePassword(auth.currentUser, p),
             
             checkAdminStatus: async () => {
                 if(!currentUser) return false;
@@ -136,29 +125,27 @@
                 await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), data, { merge: true });
             },
 
-            // SYSTEM WSPARCIA (ZAMIAST KOSZYKA)
             supportCreator: async (productId, blikCode) => {
                 if(!currentUser) return;
                 const product = APP_DATA.products.find(p => String(p.id) === String(productId));
                 if(!product) return;
 
                 const order = {
-                    userId: currentUser.uid,
-                    userEmail: currentUser.email,
+                    id: 'ORD-' + Date.now(),
                     date: new Date().toISOString(),
                     itemName: product.name,
                     total: product.price,
                     details: { type: 'Wsparcie', blik: blikCode },
-                    status: 'Opłacone (BLIK)'
+                    status: 'Opłacone (BLIK)',
+                    userEmail: currentUser.email
                 };
                 
-                // Zapisz w zamówieniach
                 await addDoc(collection(db, 'projects', 'ub-tworcy-adrion', 'orders'), order);
-                
-                // Zapisz w historii usera
                 await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), { 
-                    orders: arrayUnion({id: 'wsparcie', ...order})
+                    orders: arrayUnion(order)
                 }, { merge: true });
+
+                if(isAdmin) window.api.refreshAdminData();
             },
 
             toggleLike: async (postId) => {
@@ -182,6 +169,21 @@
                 if(!isAdmin) return;
                 const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
                 await updateDoc(postRef, { comments: arrayRemove(commentObject) });
+            },
+
+            refreshAdminData: async () => {
+                if(!isAdmin) return;
+                try {
+                    const snap = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
+                    let newOrders = [];
+                    snap.forEach(d => {
+                        const u = d.data();
+                        USERS_CACHE[d.id] = u;
+                        if(u.orders) newOrders.push(...u.orders);
+                    });
+                    ORDERS_CACHE = newOrders.sort((a,b) => new Date(b.date) - new Date(a.date));
+                    refreshView();
+                } catch(e) {}
             }
         };
 
@@ -199,6 +201,7 @@
                             updateNavState(); 
                             refreshView();
                             startSync();
+                            window.api.refreshAdminData();
                         }
                     });
 
@@ -278,12 +281,12 @@
                             <span class="font-bold text-brand-DEFAULT text-xs block">${nick}</span>
                             <span class="text-gray-300 break-words">${c.text}</span>
                         </div>
-                        ${isAdmin ? `<button onclick="deleteComment(${p.id}, ${cString})" class="text-red-500 opacity-0 group-hover/comm:opacity-100 transition"><i class="fas fa-times"></i></button>` : ''}
+                        ${isAdmin ? `<button onclick="askDeleteComm(${p.id}, ${cString})" class="text-red-500 opacity-0 group-hover/comm:opacity-100 transition"><i class="fas fa-times"></i></button>` : ''}
                     </div>`;
                 }).join('');
 
                 return `<div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 shadow-xl mb-8 relative group">
-                    ${isAdmin ? `<button onclick="delPost(${p.id})" class="absolute top-4 right-4 bg-red-500/20 text-red-500 p-2 rounded-full hover:bg-red-500 hover:text-white transition"><i class="fas fa-trash"></i></button>` : ''}
+                    ${isAdmin ? `<button onclick="askDeletePost('${p.id}')" class="absolute top-4 right-4 bg-red-500/20 text-red-500 p-2 rounded-full hover:bg-red-500 hover:text-white transition"><i class="fas fa-trash"></i></button>` : ''}
                     <h2 class="text-2xl font-bold mb-2 text-white">${p.title}</h2>
                     <p class="text-gray-400 text-sm mb-4">${new Date(p.date).toLocaleDateString()}</p>
                     ${media}
@@ -302,11 +305,11 @@
 
         function renderShop() {
             const list = document.getElementById('shop-list');
-            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Brak produktów.</div>'; return; }
+            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Brak produktów wsparcia.</div>'; return; }
             
             list.innerHTML = APP_DATA.products.map(p => `
                 <div onclick="openProductModal(${p.id})" class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300 cursor-pointer">
-                    ${isAdmin ? `<button onclick="event.stopPropagation(); delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
+                    ${isAdmin ? `<button onclick="event.stopPropagation(); askDeleteProd('${p.id}')" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
                     <div class="aspect-square overflow-hidden bg-dark-900 relative">
                         <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
                         <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center font-bold text-white">ZOBACZ</div>
@@ -347,9 +350,29 @@
             `).join('');
         }
 
-        // --- INTERAKCJE ---
+        // --- INTERAKCJE & MODALE ---
+        
+        // Uniwersalny modal wiadomości
+        window.showMessage = (title, msg) => {
+            document.getElementById('msg-title').innerText = title;
+            document.getElementById('msg-body').innerText = msg;
+            document.getElementById('msg-btn-no').classList.add('hidden');
+            document.getElementById('msg-btn-yes').innerText = "OK";
+            document.getElementById('msg-btn-yes').onclick = () => closeModal('msg');
+            openModal('msg');
+        };
+
+        // Uniwersalny modal potwierdzenia
+        window.askConfirm = (title, msg, onYes) => {
+            document.getElementById('msg-title').innerText = title;
+            document.getElementById('msg-body').innerText = msg;
+            document.getElementById('msg-btn-no').classList.remove('hidden');
+            document.getElementById('msg-btn-yes').innerText = "TAK";
+            document.getElementById('msg-btn-yes').onclick = () => { onYes(); closeModal('msg'); };
+            openModal('msg');
+        };
+
         window.openProductModal = (id) => {
-            // Konwersja na string dla pewności
             const p = APP_DATA.products.find(x => String(x.id) === String(id));
             if(!p) return;
             currentProductView = p;
@@ -357,9 +380,8 @@
             document.getElementById('prod-img').src = p.img;
             document.getElementById('prod-name').innerText = p.name;
             document.getElementById('prod-price').innerText = p.price + ' PLN';
-            document.getElementById('prod-desc').innerText = p.desc || "Brak opisu."; // Wyświetl opis
+            document.getElementById('prod-desc').innerText = p.desc || "Brak opisu.";
             
-            // Reset
             document.getElementById('pay-blik-input').value = '';
             document.getElementById('pay-blik-section').classList.add('hidden');
             document.getElementById('btn-show-blik').classList.remove('hidden');
@@ -368,14 +390,14 @@
         };
 
         window.showBlikInput = () => {
-            if(!currentUser) { alert("Zaloguj się, aby wesprzeć."); return openModal('auth'); }
+            if(!currentUser) { showMessage("Wymagane logowanie", "Zaloguj się, aby wesprzeć twórcę."); return openModal('auth'); }
             document.getElementById('btn-show-blik').classList.add('hidden');
             document.getElementById('pay-blik-section').classList.remove('hidden');
         };
 
         window.submitSupport = async () => {
             const code = document.getElementById('pay-blik-input').value;
-            if(code.length !== 6) return alert("Kod BLIK musi mieć 6 cyfr.");
+            if(code.length !== 6) return showMessage("Błąd", "Kod BLIK musi mieć 6 cyfr.");
             
             const btn = document.getElementById('btn-pay-confirm');
             btn.innerText = "Przetwarzanie...";
@@ -384,11 +406,11 @@
             setTimeout(async () => {
                 try {
                     await window.api.supportCreator(currentProductView.id, code);
-                    alert("Dziękuję za wsparcie! 💜");
                     closeModal('product');
-                } catch(e) { alert("Błąd: " + e.message); }
+                    showMessage("Sukces!", "Dziękuję za wsparcie! 💜");
+                } catch(e) { showMessage("Błąd", e.message); }
                 finally { btn.innerText = "ZATWIERDŹ"; btn.disabled = false; }
-            }, 2000);
+            }, 1500);
         };
 
         window.savePageSettings = () => {
@@ -403,14 +425,12 @@
             
             window.api.saveContent();
             uploadBuffer = '';
-            alert("Ustawienia strony zapisane!");
+            showMessage("Info", "Ustawienia zapisane!");
         };
 
         window.addComm = (id) => { const inp = document.getElementById('in-c-'+id); if(!inp.value.trim()) return; window.api.addComment(id, inp.value.trim()); inp.value = ''; };
-        window.deleteComment = (pid, cObj) => window.api.deleteComment(pid, cObj);
-        window.addPost = () => { const t = document.getElementById('add-p-title').value; if(!t) return; APP_DATA.posts.unshift({ id: Date.now(), title: t, text: document.getElementById('add-p-text').value, type: document.getElementById('add-p-type').value, image: uploadBuffer, videoUrl: document.getElementById('add-p-video').value, date: new Date().toISOString() }); window.api.saveContent(); uploadBuffer = ''; alert("Dodano!"); };
+        window.addPost = () => { const t = document.getElementById('add-p-title').value; if(!t) return; APP_DATA.posts.unshift({ id: Date.now(), title: t, text: document.getElementById('add-p-text').value, type: document.getElementById('add-p-type').value, image: uploadBuffer, videoUrl: document.getElementById('add-p-video').value, date: new Date().toISOString() }); window.api.saveContent(); uploadBuffer = ''; showMessage("Info", "Dodano post!"); };
         
-        // Dodawanie produktu z opisem
         window.addProd = () => { 
             const n = document.getElementById('add-shop-name').value; 
             if(!n) return; 
@@ -423,21 +443,26 @@
             }); 
             window.api.saveContent(); 
             uploadBuffer = ''; 
-            alert("Dodano!"); 
+            showMessage("Info", "Dodano produkt!"); 
         };
         
-        // NAPRAWIONE USUWANIE (porównanie jako string)
-        window.delPost = (id) => { 
-            if(confirm('Usunąć?')) { 
+        // --- PANCERNE USUWANIE ---
+        window.askDeletePost = (id) => { 
+            askConfirm("Usuń Wpis", "Czy na pewno usunąć ten post?", () => {
                 APP_DATA.posts = APP_DATA.posts.filter(x => String(x.id) !== String(id)); 
-                window.api.saveContent(); 
-            } 
+                window.api.saveContent();
+            });
         };
-        window.delProd = (id) => { 
-            if(confirm('Usunąć?')) { 
+        window.askDeleteProd = (id) => { 
+            askConfirm("Usuń Produkt", "Czy na pewno usunąć ten produkt ze sklepu?", () => {
                 APP_DATA.products = APP_DATA.products.filter(x => String(x.id) !== String(id)); 
-                window.api.saveContent(); 
-            } 
+                window.api.saveContent();
+            });
+        };
+        window.askDeleteComm = (pid, cObj) => {
+             // Konwersja obiektu z powrotem (bo przekazujemy go dziwną drogą w HTML)
+             if(typeof cObj === 'string') cObj = JSON.parse(cObj); // Na wypadek stringa
+             askConfirm("Usuń Komentarz", "Usunąć ten komentarz?", () => window.api.deleteComment(pid, cObj));
         };
 
         // --- SYSTEMOWE ---
@@ -469,6 +494,7 @@
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden')); 
             document.getElementById('view-'+id).classList.remove('hidden'); 
             window.scrollTo(0,0); 
+            // Desktop Nav
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('text-brand-DEFAULT')); 
             document.getElementById('btn-'+id)?.classList.add('text-brand-DEFAULT');
             // Mobile Nav
@@ -488,9 +514,9 @@
         window.handleFile = (e, lid) => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = (ev) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); const x = c.getContext('2d'); const s = Math.min(1000/i.width, 1); c.width = i.width*s; c.height = i.height*s; x.drawImage(i,0,0,c.width,c.height); uploadBuffer = c.toDataURL('image/jpeg', 0.8); if(lid) document.getElementById(lid).innerText = "Gotowe!"; }; i.src = ev.target.result; }; r.readAsDataURL(f); };
         window.openModal = (id) => document.getElementById('modal-'+id).classList.remove('hidden');
         window.closeModal = (id) => document.getElementById('modal-'+id).classList.add('hidden');
-        window.doLogin = async () => { try { await window.api.login(document.getElementById('l-email').value, document.getElementById('l-pass').value); window.closeModal('auth'); } catch(e) { alert(e.message); } };
-        window.doReg = async () => { try { const c = await window.api.reg(document.getElementById('r-email').value, document.getElementById('r-pass').value); await window.api.saveProfile({ nick: document.getElementById('r-nick').value, email: c.user.email }); window.closeModal('auth'); } catch(e) { alert(e.message); } };
-        window.saveProfile = async () => { const nick = document.getElementById('edit-nick').value; const av = uploadBuffer || document.getElementById('edit-av-url').value; const pass = document.getElementById('edit-pass').value; if(pass) { try { await window.api.updatePass(pass); alert("Hasło zmienione!"); } catch(e) { return alert(e.message); } } await window.api.saveProfile({ nick, ...(av && {avatar: av}) }); uploadBuffer = ''; document.getElementById('user-menu').classList.add('translate-x-full'); };
+        window.doLogin = async () => { try { await window.api.login(document.getElementById('l-email').value, document.getElementById('l-pass').value); window.closeModal('auth'); } catch(e) { showMessage("Błąd", e.message); } };
+        window.doReg = async () => { try { const c = await window.api.reg(document.getElementById('r-email').value, document.getElementById('r-pass').value); await window.api.saveProfile({ nick: document.getElementById('r-nick').value, email: c.user.email }); window.closeModal('auth'); } catch(e) { showMessage("Błąd", e.message); } };
+        window.saveProfile = async () => { const nick = document.getElementById('edit-nick').value; const av = uploadBuffer || document.getElementById('edit-av-url').value; const pass = document.getElementById('edit-pass').value; if(pass) { try { await window.api.updatePass(pass); showMessage("Info", "Hasło zmienione!"); } catch(e) { return showMessage("Błąd", e.message); } } await window.api.saveProfile({ nick, ...(av && {avatar: av}) }); uploadBuffer = ''; document.getElementById('user-menu').classList.add('translate-x-full'); };
         window.toggleUserMenu = () => document.getElementById('user-menu').classList.toggle('translate-x-full');
 
         window.addEventListener('load', () => { startSync(); switchTab('feed'); });
@@ -632,7 +658,7 @@
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj do Sklepu</h3>
                     <input id="add-shop-name" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Nazwa produktu">
                     <input id="add-shop-price" type="number" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Cena">
-                    <textarea id="add-shop-desc" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none" placeholder="Opis produktu (np. co to jest, rozmiary...)"></textarea>
+                    <textarea id="add-shop-desc" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none" placeholder="Opis produktu (NOWE!)"></textarea>
                     
                     <div class="flex items-center mb-4">
                         <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
@@ -724,6 +750,18 @@
                 <input id="r-email" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Email">
                 <input id="r-pass" type="password" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Hasło (min 6 znaków)">
                 <button onclick="doReg()" class="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 transition mt-2">ZAŁÓŻ KONTO</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL KOMUNIKATÓW (PIĘKNY ALERT) -->
+    <div id="modal-msg" class="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center hidden backdrop-blur-sm p-4">
+        <div class="bg-dark-800 w-full max-w-sm rounded-2xl border border-dark-600 p-6 relative text-center">
+            <h2 id="msg-title" class="text-xl font-bold text-white mb-2">Komunikat</h2>
+            <p id="msg-body" class="text-gray-400 text-sm mb-6">Treść...</p>
+            <div class="flex gap-3 justify-center">
+                <button id="msg-btn-no" class="bg-dark-700 text-white px-6 py-2 rounded-lg hover:bg-dark-600 hidden transition">NIE</button>
+                <button id="msg-btn-yes" class="bg-brand-DEFAULT text-white px-6 py-2 rounded-lg hover:bg-brand-hover transition">OK</button>
             </div>
         </div>
     </div>
