@@ -19,8 +19,10 @@
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- KONFIGURACJA ---
-        const myRealFirebaseConfig = {
+        // ==========================================
+        // TWOJA KONFIGURACJA (POPRAWIONA)
+        // ==========================================
+        const firebaseConfig = {
             apiKey: "AIzaSyAAyQapOcICUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
             projectId: "ub-tworcy-adrion",
@@ -30,49 +32,47 @@
             measurementId: "G-G0FFKFHBC2"
         };
 
-        let firebaseConfig;
-        let appId;
+        let app, auth, db;
+        let appId = firebaseConfig.projectId;
 
         try {
-            if (myRealFirebaseConfig) {
-                firebaseConfig = myRealFirebaseConfig;
-                appId = myRealFirebaseConfig.projectId;
-            } else {
-                firebaseConfig = JSON.parse(__firebase_config);
-                appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            }
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            console.log("Firebase zainicjowany poprawnie.");
         } catch (e) {
-            console.error("Firebase config error");
+            console.error("KRYTYCZNY BŁĄD FIREBASE:", e);
+            alert("Błąd konfiguracji Firebase. Sprawdź konsolę (F12).");
         }
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
         
         let docRef; 
 
         function initDataSync() {
+            if(!db) return;
+            // Używamy bezpiecznej ścieżki
             docRef = doc(db, 'projects', appId, 'public_data', 'hub_content');
 
-            // Nasłuchiwanie (Live)
             onSnapshot(docRef, (snapshot) => {
                 const statusEl = document.getElementById('cloud-status-text');
                 if(statusEl) statusEl.innerText = "Zsynchronizowano";
                 
                 if (snapshot.exists()) {
                     const data = snapshot.data();
-                    // Wyślij event do aplikacji
                     window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
                 } else {
-                    // Jeśli baza pusta, wyślij template
                     if(window.DEFAULT_DATA_TEMPLATE) {
-                        setDoc(docRef, window.DEFAULT_DATA_TEMPLATE);
+                        setDoc(docRef, window.DEFAULT_DATA_TEMPLATE).catch(err => console.log("Init create error (może brak uprawnień, to normalne na start):", err));
                     }
                 }
             }, (error) => {
                 console.error("Błąd bazy:", error);
                 const statusEl = document.getElementById('cloud-status-text');
-                if(statusEl) { statusEl.innerText = "Offline"; statusEl.style.color = "red"; }
+                if(statusEl) { statusEl.innerText = "Błąd Połączenia"; statusEl.style.color = "#ef4444"; }
+                
+                // Ignorujemy błąd permission-denied w UI, żeby nie straszyć usera
+                if(error.code !== 'permission-denied') {
+                    window.showToast("Problem z bazą danych: " + error.code, "error");
+                }
             });
         }
 
@@ -82,10 +82,10 @@
             auth: auth,
             save: async (newData) => {
                 if (!docRef) return;
-                // Optymistyczna aktualizacja lokalna
+                // Optymistyczna aktualizacja
                 window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
                 try { await setDoc(docRef, newData, { merge: true }); } 
-                catch (e) { console.error("Save error", e); window.showToast("Błąd zapisu!", "error"); }
+                catch (e) { console.error("Save error", e); window.showToast("Błąd zapisu! Sprawdź uprawnienia.", "error"); }
             },
             login: async (email, pass) => signInWithEmailAndPassword(auth, email, pass),
             register: async (email, pass) => createUserWithEmailAndPassword(auth, email, pass),
@@ -126,6 +126,7 @@
 
         #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
         .toast { background: #1a1a1a; color: white; padding: 12px 24px; border-radius: 12px; border-left: 4px solid #8b5cf6; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-size: 14px; animation: slideIn 0.3s ease; }
+        .toast.error { border-left-color: #ef4444; }
         @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
         
         .spinner { border: 2px solid rgba(255,255,255,0.1); border-top: 2px solid #fff; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.6s linear infinite; display: inline-block; }
@@ -200,7 +201,7 @@
                 </div>
             </div>
             <div class="masonry-grid" id="blog-container">
-                <!-- Skeleton Loader (To widać zamiast czarnego ekranu) -->
+                <!-- Skeleton Loader -->
                 <div class="bg-card-bg h-64 rounded-2xl animate-pulse"></div>
                 <div class="bg-card-bg h-48 rounded-2xl animate-pulse"></div>
                 <div class="bg-card-bg h-80 rounded-2xl animate-pulse"></div>
