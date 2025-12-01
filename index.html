@@ -39,6 +39,8 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
+        const BOSS_EMAIL = "adrianniekil@gmail.com";
+
         let app, auth, db;
         try {
             app = initializeApp(firebaseConfig);
@@ -62,18 +64,19 @@
         let APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA));
         let INTERACTIONS = {}; 
         let USERS_CACHE = {};
-        let ORDERS_CACHE = []; // Cache zamówień
+        let ORDERS_CACHE = [];
         let MY_CART = [];
         
         let currentUser = null;
         let isAdmin = false;
         let uploadBuffer = '';
+        let currentProductView = null; // Produkt otwarty w modalu
 
-        // --- SYNCHRONIZACJA (STARE ŚCIEŻKI) ---
+        // --- SYNCHRONIZACJA ---
         function startSync() {
             if(!db) return;
 
-            // 1. Główna treść
+            // 1. Główna treść (Posty, Produkty)
             const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
             onSnapshot(mainRef, (snap) => {
                 document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
@@ -92,7 +95,7 @@
                 refreshView();
             });
 
-            // 3. Zamówienia (Dla Admina)
+            // 3. Zamówienia (Tylko Admin)
             if(isAdmin) {
                 const ordersRef = collection(db, 'projects', 'ub-tworcy-adrion', 'orders');
                 onSnapshot(ordersRef, (snap) => {
@@ -109,7 +112,6 @@
             reg: (e, p) => createUserWithEmailAndPassword(auth, e, p),
             out: () => signOut(auth),
             
-            // Cicha weryfikacja admina
             checkAdminStatus: async () => {
                 if(!currentUser) return false;
                 try {
@@ -143,7 +145,6 @@
                 renderCart();
             },
 
-            // Składanie zamówienia (Do nowej kolekcji orders)
             placeOrder: async (orderDetails) => {
                 if(!currentUser) return;
                 const order = {
@@ -156,7 +157,7 @@
                     status: 'Nowe (BLIK)'
                 };
                 
-                // Zapisz globalnie
+                // Zapisz w osobnej kolekcji zamówień
                 await addDoc(collection(db, 'projects', 'ub-tworcy-adrion', 'orders'), order);
                 
                 // Zapisz w historii usera
@@ -167,6 +168,7 @@
 
                 MY_CART = []; 
                 renderCart();
+                return true;
             },
 
             toggleLike: async (postId) => {
@@ -206,7 +208,7 @@
                             isAdmin = true; 
                             updateNavState(); 
                             refreshView();
-                            startSync(); // Restart sync to catch admin collections
+                            startSync(); // Restart sync for admin
                         }
                     });
 
@@ -319,16 +321,20 @@
 
         function renderShop() {
             const list = document.getElementById('shop-list');
-            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Sklep wkrótce...</div>'; return; }
+            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Brak produktów.</div>'; return; }
+            
             list.innerHTML = APP_DATA.products.map(p => `
-                <div class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300">
-                    ${isAdmin ? `<button onclick="delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
-                    <div class="aspect-square overflow-hidden bg-dark-900"><img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500"></div>
+                <div onclick="openProductModal(${p.id})" class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300 cursor-pointer">
+                    ${isAdmin ? `<button onclick="event.stopPropagation(); delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
+                    <div class="aspect-square overflow-hidden bg-dark-900 relative">
+                        <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+                        <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center font-bold text-white">ZOBACZ</div>
+                    </div>
                     <div class="p-4">
                         <h3 class="font-bold text-white mb-1 truncate">${p.name}</h3>
                         <div class="flex justify-between items-center mt-3">
                             <span class="text-brand-DEFAULT font-bold">${p.price} PLN</span>
-                            <button onclick="addToCart(${p.id})" class="bg-white text-black px-3 py-1 rounded-lg text-xs font-bold hover:bg-gray-200 transition">DO KOSZYKA</button>
+                            <span class="text-xs text-gray-400">Szczegóły</span>
                         </div>
                     </div>
                 </div>`).join('');
@@ -381,35 +387,47 @@
         function renderAdminOrders() {
             const list = document.getElementById('admin-orders-table');
             document.getElementById('admin-orders-count').innerText = ORDERS_CACHE.length;
-            
-            // Sortowanie od najnowszych
-            ORDERS_CACHE.sort((a, b) => new Date(b.date) - new Date(a.date));
+            ORDERS_CACHE.sort((a,b) => new Date(b.date) - new Date(a.date)); // Sortuj po dacie
 
             list.innerHTML = ORDERS_CACHE.map(o => `
                 <tr class="border-b border-dark-700 hover:bg-dark-700/50">
                     <td class="p-3">
+                        <span class="text-brand-DEFAULT font-bold text-xs">${o.id}</span>
                         <div class="text-xs text-gray-400">${new Date(o.date).toLocaleDateString()}</div>
-                        <span class="text-brand-DEFAULT font-bold text-xs">${o.status}</span>
                     </td>
                     <td class="p-3 text-sm text-white">
                         <div class="font-bold">${o.details.name}</div>
-                        <div class="text-xs text-gray-400">${o.details.address}, ${o.details.city}</div>
-                        <div class="text-xs text-gray-500">Tel: ${o.details.phone}</div>
+                        <div class="text-xs text-gray-500">${o.userEmail}</div>
                     </td>
                     <td class="p-3 text-sm text-white font-bold">${o.total} PLN</td>
+                    <td class="p-3">
+                        <span class="bg-green-500/20 text-green-500 px-2 py-1 rounded text-xs font-bold uppercase">${o.status}</span>
+                    </td>
                 </tr>
             `).join('');
         }
 
         // --- INTERAKCJE ---
-        window.addToCart = (id) => {
-            const prod = APP_DATA.products.find(p => String(p.id) === String(id));
-            if(prod) {
-                MY_CART.push(prod);
+        window.openProductModal = (id) => {
+            const p = APP_DATA.products.find(x => x.id === id);
+            if(!p) return;
+            currentProductView = p;
+            document.getElementById('prod-img').src = p.img;
+            document.getElementById('prod-name').innerText = p.name;
+            document.getElementById('prod-price').innerText = p.price + ' PLN';
+            document.getElementById('prod-desc').innerText = p.desc || "Brak opisu.";
+            openModal('product');
+        };
+
+        window.addToCartFromModal = () => {
+            if(currentProductView) {
+                MY_CART.push(currentProductView);
                 window.api.saveCart();
+                closeModal('product');
                 openModal('cart');
             }
         };
+
         window.removeFromCart = (idx) => { 
             MY_CART.splice(idx, 1); 
             window.api.saveCart();
@@ -473,7 +491,23 @@
         window.addComm = (id) => { const inp = document.getElementById('in-c-'+id); if(!inp.value.trim()) return; window.api.addComment(id, inp.value.trim()); inp.value = ''; };
         window.deleteComment = (pid, cObj) => window.api.deleteComment(pid, cObj);
         window.addPost = () => { const t = document.getElementById('add-p-title').value; if(!t) return; APP_DATA.posts.unshift({ id: Date.now(), title: t, text: document.getElementById('add-p-text').value, type: document.getElementById('add-p-type').value, image: uploadBuffer, videoUrl: document.getElementById('add-p-video').value, date: new Date().toISOString() }); window.api.saveContent(); uploadBuffer = ''; alert("Dodano!"); };
-        window.addProd = () => { const n = document.getElementById('add-shop-name').value; if(!n) return; APP_DATA.products.push({ id: Date.now(), name: n, price: document.getElementById('add-shop-price').value, img: uploadBuffer || 'https://via.placeholder.com/300' }); window.api.saveContent(); uploadBuffer = ''; alert("Dodano!"); };
+        
+        // NOWE: DODAWANIE PRODUKTU Z OPISEM
+        window.addProd = () => { 
+            const n = document.getElementById('add-shop-name').value; 
+            if(!n) return; 
+            APP_DATA.products.push({ 
+                id: Date.now(), 
+                name: n, 
+                price: document.getElementById('add-shop-price').value, 
+                desc: document.getElementById('add-shop-desc').value, // Opis
+                img: uploadBuffer || 'https://via.placeholder.com/300' 
+            }); 
+            window.api.saveContent(); 
+            uploadBuffer = ''; 
+            alert("Dodano!"); 
+        };
+        
         window.delPost = (id) => { if(confirm('Usunąć?')) { APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== id); window.api.saveContent(); } };
         window.delProd = (id) => { if(confirm('Usunąć?')) { APP_DATA.products = APP_DATA.products.filter(x => x.id !== id); window.api.saveContent(); } };
 
@@ -677,11 +711,11 @@
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 h-fit">
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj do Sklepu</h3>
                     <input id="add-shop-name" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Nazwa produktu">
-                    <div class="flex gap-3 mb-4">
-                        <input id="add-shop-price" type="number" class="w-1/3 bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Cena">
-                        <div class="flex-1 flex items-center">
-                            <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
-                        </div>
+                    <input id="add-shop-price" type="number" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Cena">
+                    <textarea id="add-shop-desc" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none" placeholder="Opis produktu (NOWE!)"></textarea>
+                    
+                    <div class="flex items-center mb-4">
+                        <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
                     </div>
                     <button onclick="addProd()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition">DODAJ PRODUKT</button>
                 </div>
@@ -801,6 +835,28 @@
                 <input id="r-email" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Email">
                 <input id="r-pass" type="password" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Hasło (min 6 znaków)">
                 <button onclick="doReg()" class="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 transition mt-2">ZAŁÓŻ KONTO</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL PRODUKTU -->
+    <div id="modal-product" class="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center hidden backdrop-blur-sm p-4">
+        <div class="bg-dark-800 w-full max-w-2xl rounded-2xl border border-dark-600 p-0 relative flex flex-col md:flex-row overflow-hidden shadow-2xl">
+            <button onclick="closeModal('product')" class="absolute top-4 right-4 text-white z-10 bg-black/50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-black transition"><i class="fas fa-times"></i></button>
+            
+            <div class="w-full md:w-1/2 bg-black h-64 md:h-auto">
+                <img id="prod-img" class="w-full h-full object-cover">
+            </div>
+
+            <div class="w-full md:w-1/2 p-8 flex flex-col">
+                <h2 id="prod-name" class="text-3xl font-black mb-2 text-white leading-tight">Nazwa</h2>
+                <div id="prod-price" class="text-2xl font-bold text-brand-DEFAULT mb-6">0 PLN</div>
+                
+                <div class="flex-1 overflow-y-auto mb-6 pr-2 custom-scroll max-h-48">
+                    <p id="prod-desc" class="text-gray-300 text-sm leading-relaxed">Opis...</p>
+                </div>
+
+                <button onclick="addToCartFromModal()" class="w-full bg-white text-black font-bold py-3 rounded-xl hover:bg-gray-200 transition">DODAJ DO KOSZYKA</button>
             </div>
         </div>
     </div>
