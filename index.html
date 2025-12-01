@@ -37,6 +37,7 @@
 
         // --- SYNCHRONIZACJA DANYCH ---
         function initDataSync() {
+            // Główny dokument z postami i produktami
             mainDocRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
             onSnapshot(mainDocRef, (snapshot) => {
@@ -52,9 +53,7 @@
                 }
             }, (error) => {
                 if(error.code === 'permission-denied') {
-                    // Goście widzą błąd przy nasłuchu jeśli nie mają uprawnień do zapisu? Nie, do odczytu mają.
-                    // Ale w razie czego:
-                    console.log("Tryb tylko do odczytu (lub błąd reguł)");
+                    console.log("Tryb tylko do odczytu (Gość/User)");
                 }
             });
         }
@@ -73,15 +72,19 @@
                     else console.error(e);
                 }
             },
-            // Zapis profilu użytkownika (do osobnej kolekcji)
+            // Zapis profilu użytkownika (do osobnej kolekcji) - Dla każdego
             saveUserProfile: async (uid, data) => {
                 try {
                     await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), data, { merge: true });
                     // Odśwież lokalnie
                     if(!APP_DATA.users) APP_DATA.users = {};
-                    APP_DATA.users[uid] = data;
+                    APP_DATA.users[uid] = { ...APP_DATA.users[uid], ...data };
                     renderAll(); 
-                } catch(e) { console.error("Save profile error", e); }
+                    updateUI(); // Odśwież widok profilu od razu
+                } catch(e) { 
+                    console.error("Save profile error", e); 
+                    showToast("Błąd zapisu profilu: " + e.message, "error");
+                }
             },
             // Pobranie wszystkich użytkowników (Dla Admina i do wyświetlania komentarzy)
             fetchAllUsers: async () => {
@@ -152,8 +155,11 @@
                     }
 
                     // Pobierz listę wszystkich użytkowników (żeby widzieć ich nicki/avatary)
-                    const allUsers = await window.cloudAPI.fetchAllUsers();
-                    APP_DATA.users = { ...APP_DATA.users, ...allUsers };
+                    // Robimy to w tle żeby nie blokować UI
+                    window.cloudAPI.fetchAllUsers().then(allUsers => {
+                        APP_DATA.users = { ...APP_DATA.users, ...allUsers };
+                        renderAll();
+                    });
                     
                     showToast(isAdmin ? "Witaj Szefie!" : "Zalogowano pomyślnie");
                 } else {
@@ -176,12 +182,13 @@
                 document.getElementById('user-menu-logged').classList.remove('hidden');
                 // Avatar w nav
                 const myProfile = APP_DATA.users[currentUser.uid] || {};
-                document.getElementById('nav-user-avatar').src = myProfile.avatar || `https://ui-avatars.com/api/?name=${currentUser.email}&background=random`;
+                const avatarSrc = myProfile.avatar || `https://ui-avatars.com/api/?name=${currentUser.email}&background=random`;
+                document.getElementById('nav-user-avatar').src = avatarSrc;
                 
                 // Modal Profile View
                 document.getElementById('user-display-name').innerText = myProfile.nick || "Użytkownik";
                 document.getElementById('user-email-display').innerText = currentUser.email;
-                document.getElementById('user-avatar-main').src = myProfile.avatar || document.getElementById('nav-user-avatar').src;
+                document.getElementById('user-avatar-main').src = avatarSrc;
                 
                 // Form Fields
                 document.getElementById('edit-nick').value = myProfile.nick || "";
@@ -225,7 +232,8 @@
             setLoading('btn-reg', false);
         }
 
-        async function saveProfileChanges() {
+        // Funkcja do zapisu profilu (Naprawiona nazwa!)
+        async function handleUpdateProfile() {
             if(!currentUser) return;
             const newNick = document.getElementById('edit-nick').value;
             const newAvatar = currentUploadBase64 || document.getElementById('edit-avatar').value;
@@ -242,6 +250,7 @@
             await window.cloudAPI.saveUserProfile(currentUser.uid, updateData);
             showToast("Profil zaktualizowany!");
             currentUploadBase64 = ''; // Reset
+            document.getElementById('edit-pass').value = ''; // Reset pola hasła
         }
 
         // --- ADMIN ACTIONS ---
@@ -293,14 +302,16 @@
             
             // Profil Info
             const config = APP_DATA.config;
-            document.getElementById('nav-logo').innerHTML = `${config.firstName}<span class="text-brand-purple">${config.lastName}</span>`;
-            document.getElementById('profile-name').innerHTML = document.getElementById('nav-logo').innerHTML;
-            document.getElementById('profile-bio').innerText = config.bio;
-            document.getElementById('profile-avatar').src = config.avatarUrl;
-            
-            document.getElementById('stat-yt').innerText = config.stats.youtube;
-            document.getElementById('stat-ig').innerText = config.stats.instagram;
-            document.getElementById('stat-proj').innerText = config.stats.projects;
+            if(config) {
+                document.getElementById('nav-logo').innerHTML = `${config.firstName || 'HUB'}<span class="text-brand-purple">${config.lastName || ''}</span>`;
+                document.getElementById('profile-name').innerHTML = document.getElementById('nav-logo').innerHTML;
+                document.getElementById('profile-bio').innerText = config.bio || '';
+                if(config.avatarUrl) document.getElementById('profile-avatar').src = config.avatarUrl;
+                
+                document.getElementById('stat-yt').innerText = config.stats?.youtube || '-';
+                document.getElementById('stat-ig').innerText = config.stats?.instagram || '-';
+                document.getElementById('stat-proj').innerText = config.stats?.projects || '-';
+            }
         }
 
         function renderBlog() {
@@ -314,12 +325,18 @@
 
                 // Komentarze
                 const commentsHtml = (p.comments || []).map((c, i) => {
-                    // Szukamy avatara usera w załadowanych userach
-                    // c.author to u nas UID (najlepiej) lub nick. Przyjmijmy że zapisujemy UID i Nick.
-                    // Tutaj uproszczenie: w starej wersji było nick.
-                    return `<div class="text-xs border-b border-gray-100 py-1 flex justify-between group">
-                        <span><b>${c.author}:</b> ${c.text}</span>
-                        ${isAdmin ? `<i class="fas fa-times text-red-400 cursor-pointer opacity-0 group-hover:opacity-100" onclick="deleteComment(${p.id}, ${i})"></i>` : ''}
+                    // Pobieramy dane usera z cache (dzięki fetchAllUsers)
+                    const userProfile = APP_DATA.users[c.uid] || {};
+                    const authorNick = userProfile.nick || c.author || "Anonim";
+                    const authorAvatar = userProfile.avatar || `https://ui-avatars.com/api/?name=${authorNick}&background=random`;
+
+                    return `<div class="text-sm mb-3 pb-2 border-b border-gray-100 last:border-0 relative group/comment flex gap-3 items-start">
+                        <img src="${authorAvatar}" class="w-8 h-8 rounded-full object-cover bg-gray-200 mt-1">
+                        <div class="flex-1">
+                            <span class="font-bold text-black mr-2 block text-xs">${authorNick}</span>
+                            <span class="text-gray-600 block text-xs leading-relaxed">${c.text}</span>
+                        </div>
+                        ${isAdmin ? `<i class="fas fa-times text-red-400 cursor-pointer opacity-0 group-hover:opacity-100 p-1" onclick="deleteComment(${p.id}, ${i})"></i>` : ''}
                     </div>`
                 }).join('');
 
@@ -337,8 +354,8 @@
                         </div>
                     </div>
                     <div id="comments-${p.id}" class="hidden mt-3 pt-3 border-t border-gray-100">
-                        <div class="max-h-32 overflow-y-auto mb-2">${commentsHtml}</div>
-                        ${currentUser ? `<div class="flex gap-2"><input id="comment-in-${p.id}" class="w-full bg-gray-50 border p-1 rounded text-xs text-black" placeholder="Napisz..."><button onclick="addComment(${p.id})" class="text-brand-purple"><i class="fas fa-paper-plane"></i></button></div>` : ''}
+                        <div class="max-h-40 overflow-y-auto mb-2 pr-1">${commentsHtml}</div>
+                        ${currentUser ? `<div class="flex gap-2"><input id="comment-in-${p.id}" class="w-full bg-gray-50 border p-2 rounded-lg text-xs text-black" placeholder="Napisz..."><button onclick="addComment(${p.id})" class="text-brand-purple p-2"><i class="fas fa-paper-plane"></i></button></div>` : '<p class="text-xs text-gray-400">Zaloguj się, aby skomentować</p>'}
                     </div>
                 </div>`;
             }).join('');
@@ -349,7 +366,6 @@
             const tbody = document.getElementById('admin-users-list');
             if(!tbody) return;
             
-            // APP_DATA.users zawiera mapę UID -> dane
             const users = Object.entries(APP_DATA.users || {});
             document.getElementById('admin-user-count').innerText = users.length;
             
@@ -387,9 +403,16 @@
             const p = APP_DATA.posts.find(x => x.id === pid);
             if(!p.comments) p.comments = [];
             
-            const myNick = APP_DATA.users[currentUser.uid]?.nick || "Anonim";
-            p.comments.push({ author: myNick, text: txt, uid: currentUser.uid });
+            // Zapisz UID autora, żeby pobierać zawsze świeży nick/avatar
+            p.comments.push({ 
+                author: APP_DATA.users[currentUser.uid]?.nick || "Ja", 
+                text: txt, 
+                uid: currentUser.uid 
+            });
+            
             window.cloudAPI.saveContent(APP_DATA);
+            // Wyczyść input
+            document.getElementById(`comment-in-${pid}`).value = '';
         }
 
         function deletePost(pid) {
@@ -410,7 +433,7 @@
             if(!f) return;
             const r = new FileReader();
             r.onload = (ev) => {
-                // Resize logic simplified
+                // Resize logic
                 const img = new Image();
                 img.onload = () => {
                     const c = document.createElement('canvas');
@@ -436,8 +459,8 @@
         }
         function setLoading(id, s) { 
             const b = document.getElementById(id); 
-            if(s) { b.innerHTML = '...'; b.disabled=true; } 
-            else { b.innerHTML = b.dataset.txt || 'OK'; b.disabled=false; } 
+            if(s) { b.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>'; b.disabled=true; } 
+            else { b.innerHTML = b.parentElement.id === 'form-register' ? 'ZAŁÓŻ KONTO' : 'ZALOGUJ'; b.disabled=false; } 
         }
         function switchTab(t) {
             document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden'));
@@ -611,11 +634,11 @@
 
                 <div class="text-left bg-gray-50 p-4 rounded-xl mb-4">
                     <p class="text-xs font-bold text-gray-400 uppercase mb-2">Edytuj dane</p>
-                    <input id="edit-nick" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Nick">
+                    <input id="edit-nick" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Twój Nick">
                     <input id="edit-avatar" class="w-full border p-2 rounded mb-2 text-sm" placeholder="URL Avatara">
                     <input type="file" onchange="handleFile(event)" class="text-xs mb-2">
-                    <input id="edit-pass" type="password" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Nowe hasło">
-                    <button onclick="saveProfileChanges()" class="w-full bg-gray-200 text-gray-800 font-bold p-2 rounded text-xs hover:bg-gray-300">ZAPISZ ZMIANY</button>
+                    <input id="edit-pass" type="password" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Nowe hasło (opcjonalne)">
+                    <button onclick="handleUpdateProfile()" class="w-full bg-gray-200 text-gray-800 font-bold p-2 rounded text-xs hover:bg-gray-300">ZAPISZ ZMIANY</button>
                 </div>
 
                 <button onclick="window.cloudAPI.logout(); closeModal();" class="w-full border border-red-200 text-red-500 font-bold p-2 rounded hover:bg-red-50">WYLOGUJ</button>
