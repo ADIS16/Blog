@@ -28,7 +28,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, addDoc, collection, getDocs, getDoc, updateDoc, arrayUnion, arrayRemove, query, orderBy } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
@@ -38,6 +38,8 @@
             messagingSenderId: "726610553428",
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
+
+        const APP_ID = 'ub-tworcy-adrion'; // ID do struktury artifacts
 
         let app, auth, db;
         try {
@@ -62,6 +64,7 @@
         let APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA));
         let INTERACTIONS = {}; 
         let USERS_CACHE = {};
+        let ORDERS_CACHE = [];
         let MY_CART = [];
         
         let currentUser = null;
@@ -72,20 +75,37 @@
         function startSync() {
             if(!db) return;
 
-            const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+            // 1. Główna treść (Posty, Sklep)
+            const mainRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'content');
             onSnapshot(mainRef, (snap) => {
                 document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
                 if (snap.exists()) {
                     APP_DATA = { ...window.DEFAULT_DATA, ...snap.data() };
                     refreshView();
+                } else if (isAdmin) {
+                    setDoc(mainRef, window.DEFAULT_DATA).catch(()=>{});
                 }
             });
 
-            const metaRef = collection(db, 'projects', 'ub-tworcy-adrion', 'posts_meta');
+            // 2. Interakcje (Lajki, Komentarze)
+            const metaRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta');
             onSnapshot(metaRef, (snap) => {
                 snap.forEach(doc => INTERACTIONS[doc.id] = doc.data());
                 refreshView();
             });
+
+            // 3. Zamówienia (Tylko dla Admina)
+            if (isAdmin) {
+                const ordersRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'orders');
+                // Proste pobieranie bez orderBy żeby uniknąć problemów z indeksami na starcie
+                onSnapshot(ordersRef, (snap) => {
+                    ORDERS_CACHE = [];
+                    snap.forEach(doc => ORDERS_CACHE.push({ id: doc.id, ...doc.data() }));
+                    // Sortowanie po stronie klienta (najnowsze pierwsze)
+                    ORDERS_CACHE.sort((a,b) => new Date(b.date) - new Date(a.date));
+                    renderAdminOrders();
+                });
+            }
         }
 
         // --- API ---
@@ -94,10 +114,11 @@
             reg: (e, p) => createUserWithEmailAndPassword(auth, e, p),
             out: () => signOut(auth),
             
+            // Sprawdzenie Admina (Test zapisu)
             checkAdminStatus: async () => {
                 if(!currentUser) return false;
                 try {
-                    const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+                    const mainRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'content');
                     await setDoc(mainRef, { _adminCheck: Date.now() }, { merge: true });
                     return true;
                 } catch(e) { return false; }
@@ -105,7 +126,7 @@
 
             saveContent: async () => {
                 if(isAdmin) {
-                    const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+                    const mainRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'content');
                     await setDoc(mainRef, APP_DATA, { merge: true });
                 }
                 refreshView();
@@ -115,42 +136,33 @@
                 if(!currentUser) return;
                 USERS_CACHE[currentUser.uid] = { ...USERS_CACHE[currentUser.uid], ...data };
                 updateNavState();
-                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), data, { merge: true });
-            },
-
-            saveCart: async () => {
-                if(currentUser) {
-                    await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), { cart: MY_CART }, { merge: true });
-                } else {
-                    localStorage.setItem('local_cart', JSON.stringify(MY_CART));
-                }
-                renderCart();
+                await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'users', currentUser.uid), data, { merge: true });
             },
 
             placeOrder: async (orderDetails) => {
                 if(!currentUser) return;
-                const order = {
-                    id: 'ORD-' + Date.now(),
-                    date: new Date().toISOString(),
+                
+                const orderData = {
+                    userId: currentUser.uid,
+                    userEmail: currentUser.email,
                     items: MY_CART,
                     total: MY_CART.reduce((s, i) => s + parseFloat(i.price), 0),
                     details: orderDetails,
-                    status: 'nowe'
+                    status: 'Opłacone (BLIK)',
+                    date: new Date().toISOString()
                 };
-                
-                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), { 
-                    orders: arrayUnion(order),
-                    cart: [] 
-                }, { merge: true });
 
-                MY_CART = []; 
+                // Zapisz do kolekcji zamówień (dla Admina)
+                await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'orders'), orderData);
+                
+                MY_CART = []; // Wyczyść koszyk lokalnie
+                localStorage.setItem('local_cart', '[]');
                 renderCart();
-                return order.id;
             },
 
             toggleLike: async (postId) => {
                 if(!currentUser) return openModal('auth');
-                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const postRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta', String(postId));
                 const currentLikes = INTERACTIONS[postId]?.likes || [];
                 const isLiked = currentLikes.includes(currentUser.uid);
 
@@ -160,14 +172,14 @@
 
             addComment: async (postId, text) => {
                 if(!currentUser) return;
-                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const postRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta', String(postId));
                 const comment = { id: Date.now(), uid: currentUser.uid, text: text, date: new Date().toISOString() };
                 await setDoc(postRef, { comments: arrayUnion(comment) }, { merge: true });
             },
 
             deleteComment: async (postId, commentObject) => {
                 if(!isAdmin) return;
-                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const postRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta', String(postId));
                 await updateDoc(postRef, { comments: arrayRemove(commentObject) });
             }
         };
@@ -181,26 +193,33 @@
 
                 if (user) {
                     window.api.checkAdminStatus().then(isBoss => {
-                        if(isBoss) { isAdmin = true; updateNavState(); refreshView(); }
+                        if(isBoss) { 
+                            isAdmin = true; 
+                            updateNavState(); 
+                            refreshView();
+                            startSync(); // Restart sync to catch admin collections
+                        }
                     });
 
-                    const uDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
+                    // Pobierz profil
+                    const uDoc = await getDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'users', user.uid));
                     if(uDoc.exists()) {
-                        const data = uDoc.data();
-                        USERS_CACHE[user.uid] = data;
-                        MY_CART = data.cart || []; 
+                        USERS_CACHE[user.uid] = uDoc.data();
                     } else {
                         window.api.saveProfile({ nick: user.email.split('@')[0], email: user.email });
                     }
                     
-                    const allUsers = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
+                    // Pobierz cache userów
+                    const allUsers = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', 'users'));
                     allUsers.forEach(d => USERS_CACHE[d.id] = d.data());
-                } else {
-                    MY_CART = JSON.parse(localStorage.getItem('local_cart') || '[]');
                 }
+                
+                // Koszyk zawsze lokalny (prościej)
+                MY_CART = JSON.parse(localStorage.getItem('local_cart') || '[]');
                 
                 renderCart();
                 refreshView();
+                startSync();
             });
         }
 
@@ -209,7 +228,10 @@
             renderHeader();
             renderBlog();
             renderShop();
-            if(isAdmin) renderAdmin();
+            if(isAdmin) {
+                renderAdminUsers();
+                renderAdminOrders();
+            }
         };
 
         function renderHeader() {
@@ -294,10 +316,13 @@
         function renderCart() {
             const list = document.getElementById('cart-items');
             const badge = document.getElementById('cart-badge');
+            const badgeMob = document.getElementById('cart-badge-mob');
             const checkoutList = document.getElementById('checkout-items-summary');
             
             badge.innerText = MY_CART.length;
             badge.classList.toggle('hidden', MY_CART.length === 0);
+            badgeMob.innerText = MY_CART.length;
+            badgeMob.classList.toggle('hidden', MY_CART.length === 0);
 
             if(MY_CART.length === 0) {
                 const emptyHTML = '<div class="text-center text-gray-500 mt-10">Pusty koszyk</div>';
@@ -326,19 +351,37 @@
             document.querySelectorAll('.cart-total-display').forEach(el => el.innerText = total.toFixed(2) + " PLN");
         }
 
-        function renderAdmin() {
+        function renderAdminUsers() {
             const list = document.getElementById('admin-users-table');
             const users = Object.values(USERS_CACHE);
-            document.getElementById('admin-user-count').innerText = users.length;
-            list.innerHTML = users.map(u => {
-                const ordersCount = u.orders ? u.orders.length : 0;
-                return `<tr class="border-b border-dark-700 hover:bg-dark-700/50">
-                    <td class="p-3 font-bold text-white">${u.nick}</td>
-                    <td class="p-3 text-gray-400 text-sm">${u.email}</td>
-                    <td class="p-3 text-xs">${u.role||'user'}</td>
-                    <td class="p-3 text-xs text-brand-DEFAULT">${ordersCount} zam.</td>
-                </tr>`;
-            }).join('');
+            list.innerHTML = users.map(u => `<tr class="border-b border-dark-700 hover:bg-dark-700/50"><td class="p-3 font-bold text-white">${u.nick}</td><td class="p-3 text-gray-400 text-sm">${u.email}</td><td class="p-3 text-xs">${u.role||'user'}</td></tr>`).join('');
+        }
+
+        function renderAdminOrders() {
+            const list = document.getElementById('admin-orders-table');
+            document.getElementById('admin-orders-count').innerText = ORDERS_CACHE.length;
+            
+            if(ORDERS_CACHE.length === 0) {
+                list.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-500">Brak zamówień</td></tr>';
+                return;
+            }
+
+            list.innerHTML = ORDERS_CACHE.map(o => `
+                <tr class="border-b border-dark-700 hover:bg-dark-700/50">
+                    <td class="p-3">
+                        <span class="text-brand-DEFAULT font-bold text-xs">${o.id}</span>
+                        <div class="text-xs text-gray-400">${new Date(o.date).toLocaleDateString()}</div>
+                    </td>
+                    <td class="p-3 text-sm text-white">
+                        ${o.details.name}<br>
+                        <span class="text-gray-500 text-xs">${o.userEmail}</span>
+                    </td>
+                    <td class="p-3 text-sm text-white font-bold">${o.total} PLN</td>
+                    <td class="p-3">
+                        <span class="bg-green-500/20 text-green-500 px-2 py-1 rounded text-xs font-bold uppercase">${o.status}</span>
+                    </td>
+                </tr>
+            `).join('');
         }
 
         // --- INTERAKCJE ---
@@ -346,11 +389,16 @@
             const prod = APP_DATA.products.find(p => String(p.id) === String(id));
             if(prod) {
                 MY_CART.push(prod);
-                window.api.saveCart();
+                localStorage.setItem('local_cart', JSON.stringify(MY_CART));
+                renderCart();
                 openModal('cart');
-            } else { alert("Błąd produktu"); }
+            }
         };
-        window.removeFromCart = (idx) => { MY_CART.splice(idx, 1); window.api.saveCart(); };
+        window.removeFromCart = (idx) => { 
+            MY_CART.splice(idx, 1); 
+            localStorage.setItem('local_cart', JSON.stringify(MY_CART));
+            renderCart(); 
+        };
 
         window.goToCheckout = () => {
             if(!currentUser) { alert("Musisz się zalogować, aby złożyć zamówienie!"); return openModal('auth'); }
@@ -370,19 +418,27 @@
                 address: document.getElementById('order-address').value,
                 city: document.getElementById('order-city').value,
                 phone: document.getElementById('order-phone').value,
-                payment: document.querySelector('input[name="payment"]:checked')?.value
+                blik: document.getElementById('order-blik').value
             };
-            if(!form.name || !form.address || !form.city || !form.phone || !form.payment) return alert("Wypełnij wszystkie dane dostawy!");
+            
+            if(!form.name || !form.address || !form.city || !form.phone || !form.blik) return alert("Wypełnij wszystkie dane!");
+            if(form.blik.length !== 6) return alert("Kod BLIK musi mieć 6 cyfr!");
+
             const btn = document.getElementById('btn-order-submit');
-            btn.innerText = "Przetwarzanie...";
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> PRZETWARZANIE PŁATNOŚCI...';
             btn.disabled = true;
-            try {
-                const orderId = await window.api.placeOrder(form);
-                alert(`Dziękujemy! Zamówienie nr ${orderId} zostało przyjęte.`);
-                closeModal('cart');
-                backToCart();
-            } catch(e) { alert("Błąd: " + e.message); } 
-            finally { btn.innerText = "ZAMAWIAM I PŁACĘ"; btn.disabled = false; }
+
+            // Symulacja płatności
+            setTimeout(async () => {
+                try {
+                    const orderId = await window.api.placeOrder(form);
+                    alert(`✅ Płatność przyjęta!\nZamówienie zostało złożone.`);
+                    closeModal('cart');
+                    backToCart();
+                    document.getElementById('order-blik').value = '';
+                } catch(e) { alert("Błąd: " + e.message); } 
+                finally { btn.innerText = "ZATWIERDŹ I ZAPŁAĆ (BLIK)"; btn.disabled = false; }
+            }, 2000);
         };
 
         window.addComm = (id) => { const inp = document.getElementById('in-c-'+id); if(!inp.value.trim()) return; window.api.addComment(id, inp.value.trim()); inp.value = ''; };
@@ -392,7 +448,7 @@
         window.delPost = (id) => { if(confirm('Usunąć?')) { APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== id); window.api.saveContent(); } };
         window.delProd = (id) => { if(confirm('Usunąć?')) { APP_DATA.products = APP_DATA.products.filter(x => x.id !== id); window.api.saveContent(); } };
 
-        // --- SYSTEMOWE ---
+        // --- UI UTILS ---
         function updateNavState() {
             if(currentUser) {
                 document.getElementById('nav-auth-btn').classList.add('hidden');
@@ -405,7 +461,7 @@
                 document.getElementById('menu-nick').innerText = u.nick || 'User';
                 document.getElementById('menu-admin-badge').classList.toggle('hidden', !isAdmin);
                 document.getElementById('btn-admin').classList.toggle('hidden', !isAdmin);
-                document.getElementById('mob-btn-admin').classList.toggle('hidden', !isAdmin); // Mobile panel visibility
+                document.getElementById('mob-btn-admin').classList.toggle('hidden', !isAdmin); 
                 document.getElementById('mob-btn-admin').classList.toggle('flex', isAdmin);
                 document.getElementById('edit-nick').value = u.nick || '';
                 document.getElementById('edit-av-url').value = u.avatar || '';
@@ -417,22 +473,28 @@
                 document.getElementById('mob-btn-admin').classList.remove('flex');
             }
         }
+        
         window.switchTab = (id) => { 
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden')); 
             document.getElementById('view-'+id).classList.remove('hidden'); 
             window.scrollTo(0,0); 
-            // Update Desktop Nav
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('text-brand-DEFAULT')); 
             document.getElementById('btn-'+id)?.classList.add('text-brand-DEFAULT');
-            // Update Mobile Nav
+            
+            // Mobile Nav Active State
             document.querySelectorAll('[id^="mob-btn-"]').forEach(b => b.classList.remove('text-brand-DEFAULT', 'text-white'));
             document.querySelectorAll('[id^="mob-btn-"]').forEach(b => b.classList.add('text-gray-500'));
             const mobBtn = document.getElementById('mob-btn-'+id);
-            if(mobBtn) {
-                mobBtn.classList.remove('text-gray-500');
-                mobBtn.classList.add('text-brand-DEFAULT');
-            }
+            if(mobBtn) { mobBtn.classList.remove('text-gray-500'); mobBtn.classList.add('text-brand-DEFAULT'); }
         };
+
+        window.openAdminTab = (tabName) => {
+            document.querySelectorAll('.admin-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById('admin-tab-'+tabName).classList.remove('hidden');
+            document.querySelectorAll('.admin-tab-btn').forEach(el => el.classList.remove('border-brand-DEFAULT', 'text-white'));
+            document.getElementById('btn-adm-'+tabName).classList.add('border-brand-DEFAULT', 'text-white');
+        };
+
         window.handleFile = (e, lid) => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = (ev) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); const x = c.getContext('2d'); const s = Math.min(1000/i.width, 1); c.width = i.width*s; c.height = i.height*s; x.drawImage(i,0,0,c.width,c.height); uploadBuffer = c.toDataURL('image/jpeg', 0.8); if(lid) document.getElementById(lid).innerText = "Gotowe!"; }; i.src = ev.target.result; }; r.readAsDataURL(f); };
         window.openModal = (id) => document.getElementById('modal-'+id).classList.remove('hidden');
         window.closeModal = (id) => document.getElementById('modal-'+id).classList.add('hidden');
@@ -486,7 +548,7 @@
         </div>
     </nav>
 
-    <!-- NAVBAR MOBILE (TOP LOGO + CART) -->
+    <!-- NAVBAR MOBILE -->
     <nav class="fixed top-0 w-full bg-dark-900/95 backdrop-blur-md border-b border-dark-700 z-40 h-14 flex items-center justify-between px-4 md:hidden">
         <div class="font-bold text-xl tracking-tighter">HUB<span class="text-brand-DEFAULT">.</span></div>
         <div class="flex gap-4 items-center">
@@ -503,20 +565,16 @@
     <!-- MOBILE BOTTOM NAV -->
     <div id="mobile-nav" class="md:hidden fixed bottom-0 w-full bg-dark-900 border-t border-dark-700 z-50 flex justify-around items-center h-16 pb-safe">
         <button id="mob-btn-feed" onclick="switchTab('feed')" class="flex flex-col items-center justify-center w-full h-full text-brand-DEFAULT">
-            <i class="fas fa-home text-lg mb-1"></i>
-            <span class="text-[10px] font-bold">VLOG</span>
+            <i class="fas fa-home text-lg mb-1"></i><span class="text-[10px] font-bold">VLOG</span>
         </button>
         <button id="mob-btn-shop" onclick="switchTab('shop')" class="flex flex-col items-center justify-center w-full h-full text-gray-500 hover:text-white transition">
-            <i class="fas fa-shopping-bag text-lg mb-1"></i>
-            <span class="text-[10px] font-bold">SKLEP</span>
+            <i class="fas fa-shopping-bag text-lg mb-1"></i><span class="text-[10px] font-bold">SKLEP</span>
         </button>
         <button id="mob-btn-about" onclick="switchTab('about')" class="flex flex-col items-center justify-center w-full h-full text-gray-500 hover:text-white transition">
-            <i class="fas fa-user text-lg mb-1"></i>
-            <span class="text-[10px] font-bold">O MNIE</span>
+            <i class="fas fa-user text-lg mb-1"></i><span class="text-[10px] font-bold">O MNIE</span>
         </button>
         <button id="mob-btn-admin" onclick="switchTab('admin')" class="hidden flex-col items-center justify-center w-full h-full text-gray-500 hover:text-red-400 transition">
-            <i class="fas fa-lock text-lg mb-1"></i>
-            <span class="text-[10px] font-bold">PANEL</span>
+            <i class="fas fa-lock text-lg mb-1"></i><span class="text-[10px] font-bold">PANEL</span>
         </button>
     </div>
 
@@ -556,10 +614,19 @@
             </div>
         </div>
 
-        <!-- ADMIN -->
+        <!-- ADMIN (NOWY UKŁAD Z ZAKŁADKAMI) -->
         <div id="view-admin" class="view-section hidden">
             <h2 class="text-3xl font-black mb-8 border-b border-dark-700 pb-4 text-red-500">CENTRUM DOWODZENIA</h2>
-            <div class="grid lg:grid-cols-2 gap-8">
+            
+            <!-- ADMIN MENU -->
+            <div class="flex gap-4 mb-8 overflow-x-auto pb-2">
+                <button id="btn-adm-content" onclick="openAdminTab('content')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold border-brand-DEFAULT text-white">TREŚĆ</button>
+                <button id="btn-adm-users" onclick="openAdminTab('users')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold">UŻYTKOWNICY</button>
+                <button id="btn-adm-orders" onclick="openAdminTab('orders')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold">ZAMÓWIENIA</button>
+            </div>
+
+            <!-- TREŚĆ (POSTY/PRODUKTY) -->
+            <div id="admin-tab-content" class="admin-tab-content grid lg:grid-cols-2 gap-8">
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700">
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj Wpis</h3>
                     <input id="add-p-title" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white focus:border-brand-DEFAULT outline-none" placeholder="Tytuł posta">
@@ -589,14 +656,29 @@
                     </div>
                     <button onclick="addProd()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition">DODAJ PRODUKT</button>
                 </div>
-                <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 lg:col-span-2">
-                    <h3 class="font-bold text-xl mb-4 text-white">Baza Użytkowników (<span id="admin-user-count">0</span>)</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm">
-                            <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th><th class="pb-2">Historia</th></tr></thead>
-                            <tbody id="admin-users-table"></tbody>
-                        </table>
-                    </div>
+            </div>
+
+            <!-- UŻYTKOWNICY -->
+            <div id="admin-tab-users" class="admin-tab-content hidden bg-dark-800 p-6 rounded-2xl border border-dark-700">
+                <h3 class="font-bold text-xl mb-4 text-white">Lista Użytkowników</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th></tr></thead>
+                        <tbody id="admin-users-table"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ZAMÓWIENIA -->
+            <div id="admin-tab-orders" class="admin-tab-content hidden bg-dark-800 p-6 rounded-2xl border border-dark-700">
+                <h3 class="font-bold text-xl mb-4 text-white">Nowe Zamówienia (<span id="admin-orders-count">0</span>)</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">ID/Data</th><th class="pb-2">Klient</th><th class="pb-2">Kwota</th><th class="pb-2">Status</th></tr></thead>
+                        <tbody id="admin-orders-table">
+                            <!-- Tutaj wpadną zamówienia -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -623,7 +705,7 @@
     <!-- MODAL LOGOWANIA -->
     <div id="modal-auth" class="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center hidden backdrop-blur-sm p-4">
         <div class="bg-dark-800 w-full max-w-sm rounded-2xl border border-dark-600 p-8 relative">
-            <button onclick="closeModal('auth')" class="absolute top-4 right-4 text-gray-500 hover:text-white"><i class="fas fa-times"></i></button>
+            <button onclick="closeModal('auth')" class="absolute top-4 right-4 text-gray-500 hover:text-white"><i class="fas fa-times text-xl"></i></button>
             <h2 class="text-2xl font-bold text-center mb-6 text-white">Dołącz do nas</h2>
             <div class="flex mb-6 border-b border-dark-700">
                 <button onclick="document.getElementById('form-l').classList.remove('hidden');document.getElementById('form-r').classList.add('hidden');" class="flex-1 pb-2 text-brand-DEFAULT font-bold border-b-2 border-brand-DEFAULT">Logowanie</button>
@@ -643,7 +725,7 @@
         </div>
     </div>
 
-    <!-- MODAL KOSZYK (TERAZ Z CHECKOUT) -->
+    <!-- MODAL KOSZYK -->
     <div id="modal-cart" class="fixed inset-0 bg-black/80 z-[60] flex justify-end hidden">
         <div class="absolute inset-0" onclick="closeModal('cart')"></div>
         <div class="bg-dark-800 w-full max-w-md h-full border-l border-dark-700 shadow-2xl flex flex-col relative animate-fade-in">
@@ -678,20 +760,13 @@
                     </div>
 
                     <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
-                        <h3 class="font-bold text-sm text-gray-400 mb-3 uppercase">Metoda Płatności</h3>
+                        <h3 class="font-bold text-sm text-gray-400 mb-3 uppercase">Płatność</h3>
                         <div class="space-y-2">
-                            <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition border border-dark-700">
+                            <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition border border-dark-700 border-brand-DEFAULT">
                                 <input type="radio" name="payment" value="blik" checked class="accent-brand-DEFAULT">
                                 <span class="font-bold">BLIK</span>
                             </label>
-                            <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition border border-dark-700">
-                                <input type="radio" name="payment" value="przelew" class="accent-brand-DEFAULT">
-                                <span class="font-bold">Szybki Przelew</span>
-                            </label>
-                            <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition border border-dark-700">
-                                <input type="radio" name="payment" value="pobranie" class="accent-brand-DEFAULT">
-                                <span class="font-bold">Za pobraniem (+15 PLN)</span>
-                            </label>
+                            <input id="order-blik" type="text" maxlength="6" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white text-center tracking-widest text-xl" placeholder="KOD BLIK (6 cyfr)">
                         </div>
                     </div>
 
@@ -706,7 +781,7 @@
                 </div>
 
                 <div class="mt-4 pt-4 border-t border-dark-700">
-                    <button id="btn-order-submit" onclick="submitOrder()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-green-900/20">ZAMAWIAM I PŁACĘ</button>
+                    <button id="btn-order-submit" onclick="submitOrder()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-green-900/20">ZATWIERDŹ I ZAPŁAĆ (BLIK)</button>
                 </div>
             </div>
         </div>
