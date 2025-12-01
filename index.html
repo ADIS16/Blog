@@ -9,17 +9,15 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 
-    <!-- FIREBASE SDK -->
+    <!-- FIREBASE SDK (Wersja stabilna 10.13.2) -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
-        // --- LOGIKA KONFIGURACJI ---
-        
-        // KROK 1: TUTAJ WKLEJ SWOJE DANE Z FIREBASE (Project Settings -> General -> Your apps)
-        // Zastąp te napisy "WKLEJ_..." swoimi danymi
-        let defaultConfig = {
+        // --- KONFIGURACJA FIREBASE ---
+        // Używam danych, które wpisałeś w poprzednim kroku
+        const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
             projectId: "ub-tworcy-adrion",
@@ -28,107 +26,75 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        // 2. Sprawdź czy mamy naprawioną konfigurację w pamięci (zostawiam Twój mechanizm ratunkowy)
-        const savedConfig = localStorage.getItem('hub_firebase_repair');
-        if (savedConfig) {
-            try {
-                defaultConfig = JSON.parse(savedConfig);
-                console.log("Używam naprawionej konfiguracji z pamięci.");
-            } catch(e) { console.error("Błąd odczytu naprawy", e); }
-        }
-
-        // 3. Inicjalizacja
+        // --- INICJALIZACJA ---
         let app, auth, db, docRef;
         let isConfigError = false;
 
         try {
-            // Sprawdzamy czy użytkownik uzupełnił config, żeby nie wywaliło błędu od razu
-            if (defaultConfig.apiKey === "WKLEJ_TUTAJ_API_KEY") {
-                throw new Error("Nie uzupełniono pliku index.html danymi z Firebase!");
-            }
-
-            app = initializeApp(defaultConfig);
+            app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
+            console.log("Firebase zainicjowany poprawnie.");
         } catch (e) {
             isConfigError = true;
-            // Pokażemy modal naprawczy dopiero po załadowaniu DOM, więc tutaj tylko logujemy
-            console.warn("Czekam na konfigurację...", e.message);
+            console.error("Błąd inicjalizacji Firebase:", e);
         }
 
         // --- FUNKCJA SYNCHRONIZACJI ---
         function initDataSync() {
             if(isConfigError) {
-                // Jeśli config jest zły, od razu pokaż modal naprawczy
-                setTimeout(() => showRepairModal("Uzupełnij kod w pliku HTML lub wklej Config tutaj:"), 1000);
+                showToast("Błąd konfiguracji Firebase! Sprawdź konsolę.", "error");
                 return;
             }
             
-            // Twoja struktura bazy: projects -> ub-tworcy-adrion -> public_data -> hub_content
-            // To utworzy jeden duży dokument JSON trzymający stan całej strony
+            // Ścieżka do głównego dokumentu strony
             docRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
             onSnapshot(docRef, (snapshot) => {
-                document.getElementById('cloud-status-text').innerText = "Online";
-                document.getElementById('cloud-status-text').style.color = "#22c55e"; // Green
+                const statusEl = document.getElementById('cloud-status-text');
+                if(statusEl) {
+                    statusEl.innerText = "Online";
+                    statusEl.style.color = "#22c55e"; // Green
+                }
                 
                 if (snapshot.exists()) {
+                    // Mamy dane z bazy -> aktualizujemy stronę
                     window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: snapshot.data() }));
                 } else {
-                    // Jeśli dokumentu nie ma (czysta baza), tworzymy go z szablonu
-                    console.log("Tworzę strukturę początkową w bazie...");
-                    if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE);
+                    // Baza jest pusta -> wysyłamy szablon startowy
+                    console.log("Baza pusta. Tworzę strukturę początkową...");
+                    if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
+                        .then(() => console.log("Struktura utworzona!"))
+                        .catch(err => {
+                            if (err.code === 'permission-denied') {
+                                console.error("Brak uprawnień do zapisu!");
+                                showToast("BŁĄD: Brak uprawnień w bazie (Rules)!", "error");
+                            }
+                        });
                 }
             }, (error) => {
                 console.error("Firebase Error:", error);
+                const statusEl = document.getElementById('cloud-status-text');
                 
                 if (error.code === 'permission-denied') {
                     window.showToast("BRAK UPRAWNIEŃ! Zmień zakładkę 'Rules' w Firebase.", "error");
-                    document.getElementById('cloud-status-text').innerText = "Brak Dostępu";
-                    document.getElementById('cloud-status-text').style.color = "red";
+                    if(statusEl) { statusEl.innerText = "Brak Dostępu"; statusEl.style.color = "red"; }
                 } else if (error.code === 'auth/api-key-not-valid' || error.message.includes('api-key')) {
-                    showRepairModal("Błędny API KEY. Sprawdź config.");
+                    showRepairModal("Błędny API KEY w kodzie strony!");
                 } else {
-                    document.getElementById('cloud-status-text').innerText = "Błąd";
-                    document.getElementById('cloud-status-text').style.color = "red";
+                    if(statusEl) { statusEl.innerText = "Błąd"; statusEl.style.color = "red"; }
                 }
             });
         }
 
-        // Uruchomienie
+        // Uruchomienie po załadowaniu strony
         window.addEventListener('load', () => {
              initDataSync();
         });
 
-        // --- SYSTEM NAPRAWY (Pozostawiony bez zmian, bo jest przydatny) ---
+        // --- MODAL DO SZYBKIEJ NAPRAWY ---
         window.saveRepairConfig = function() {
-            const input = document.getElementById('repair-input').value;
-            try {
-                const newConfig = {};
-                const keys = ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId'];
-                
-                keys.forEach(key => {
-                    const regex = new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`);
-                    const match = input.match(regex);
-                    if(match) newConfig[key] = match[1];
-                });
-
-                if(!newConfig.apiKey) {
-                    // Próba parsowania czystego JSON jeśli ktoś wklei JSON
-                    try {
-                        const jsonConfig = JSON.parse(input);
-                        if(jsonConfig.apiKey) Object.assign(newConfig, jsonConfig);
-                    } catch(e) {}
-                }
-
-                if(!newConfig.apiKey) throw new Error("Nie znalazłem apiKey w tekście.");
-
-                localStorage.setItem('hub_firebase_repair', JSON.stringify(newConfig));
-                alert("Konfiguracja zapisana! Strona zostanie odświeżona.");
-                location.reload();
-            } catch(e) {
-                alert("Nie udało się odczytać danych. Upewnij się, że wklejasz cały obiekt config.");
-            }
+            alert("Teraz edytuj plik index.html bezpośrednio, aby zmienić konfigurację.");
         }
         
         function showRepairModal(msg) {
@@ -139,13 +105,19 @@
             }
         }
 
-        // Eksport API
+        // Eksport API dla reszty skryptów
         window.cloudAPI = {
             auth: auth,
             save: async (newData) => {
                 if (!docRef) return;
+                // Optymistyczna aktualizacja lokalna
                 window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
-                try { await setDoc(docRef, newData, { merge: true }); } catch (e) { console.error("Save error", e); }
+                try { 
+                    await setDoc(docRef, newData, { merge: true }); 
+                } catch (e) { 
+                    console.error("Błąd zapisu:", e);
+                    if(e.code === 'permission-denied') showToast("Brak uprawnień do zapisu!", "error");
+                }
             },
             login: async (email, pass) => {
                 try {
@@ -209,15 +181,13 @@
             <div class="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">
                 <i class="fas fa-plug"></i>
             </div>
-            <h2 class="text-2xl font-bold text-gray-900 mb-2">Konfiguracja Firebase</h2>
+            <h2 class="text-2xl font-bold text-gray-900 mb-2">Problem z konfiguracją</h2>
             <p id="repair-reason" class="text-red-500 font-bold text-sm mb-4"></p>
             <p class="text-gray-600 text-sm mb-4">
-                1. Wejdź w <b>Firebase Console</b> -> Project Settings.<br>
-                2. Skopiuj fragment <code>const firebaseConfig = { ... };</code><br>
-                3. Wklej go tutaj, aby połączyć stronę z bazą:
+                Twoje klucze API wydają się niepoprawne lub baza odrzuca połączenie.<br>
+                Sprawdź czy w pliku <code>index.html</code> poprawnie wkleiłeś <code>apiKey</code>, <code>projectId</code> itd.
             </p>
-            <textarea id="repair-input" class="w-full h-32 bg-gray-100 border border-gray-300 rounded-lg p-3 text-xs font-mono mb-4 focus:border-brand-purple outline-none" placeholder='Wklej tutaj: const firebaseConfig = { ... }'></textarea>
-            <button onclick="saveRepairConfig()" class="w-full bg-brand-purple text-white font-bold py-3 rounded-xl hover:bg-brand-pink transition-all shadow-lg">ZAPISZ I POŁĄCZ</button>
+            <button onclick="location.reload()" class="w-full bg-brand-purple text-white font-bold py-3 rounded-xl hover:bg-brand-pink transition-all shadow-lg">ODŚWIEŻ STRONĘ</button>
         </div>
     </div>
 
