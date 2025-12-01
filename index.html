@@ -5,9 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hub Twórcy - Official World</title>
     
+    <!-- Stylizacja i Ikony -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Outfit', 'sans-serif'] },
+                    colors: { 
+                        brand: { DEFAULT: '#8b5cf6', hover: '#7c3aed', dark: '#6d28d9' }, // Fiolet
+                        dark: { 900: '#0f0f11', 800: '#18181b', 700: '#27272a', 600: '#3f3f46' } // Ciemne tła
+                    }
+                }
+            }
+        }
+    </script>
 
     <!-- FIREBASE SDK -->
     <script type="module">
@@ -15,6 +31,7 @@
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
+        // --- KONFIGURACJA ---
         const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
@@ -24,406 +41,325 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        // --- 👑 EMAIL SZEFA (Musi być identyczny jak w Firebase Rules) ---
         const BOSS_EMAIL = "adrianniekil@gmail.com";
 
+        // --- INICJALIZACJA ---
         let app, auth, db, mainDocRef;
-        
         try {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
-        } catch (e) { console.error("Firebase init error", e); }
+        } catch (e) { console.error("Firebase Init Error", e); }
 
-        // --- DANE LOKALNE ---
-        window.DEFAULT_DATA_TEMPLATE = {
+        // --- DANE GLOBALNE ---
+        window.DEFAULT_DATA = {
             config: {
-                firstName: "ADRION", lastName: "___",   
-                bio: "Lifestyle, moda i codzienne vlogi.",
+                firstName: "ADRION", lastName: "",   
+                bio: "Buduję formę, nawyki i głowę. Bez filtrów, z pełnym zaangażowaniem.",
                 avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=1964&auto=format&fit=crop",
-                email: "kontakt@twojadomena.pl",
-                stats: { youtube: "10K", instagram: "14.5K", projects: "5" },
-                links: { instagram: "https://www.instagram.com/___adrion___/" }
+                stats: { youtube: "0", instagram: "168", projects: "0" }
             },
-            posts: [{ id: 101, type: 'status', title: 'Start', text: 'Witaj w świecie Adrion.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }],
+            posts: [{ id: 101, type: 'status', title: 'Start', text: 'Witaj na nowej stronie!', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }],
             products: []
         };
 
-        const CACHE_KEY = 'hub_data_v3';
-        let APP_DATA = JSON.parse(localStorage.getItem(CACHE_KEY) || JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+        const CACHE_KEY = 'hub_data_v5';
+        let APP_DATA = JSON.parse(localStorage.getItem(CACHE_KEY) || JSON.stringify(window.DEFAULT_DATA));
         if(!APP_DATA.users) APP_DATA.users = {};
 
         let currentUser = null;
         let isAdmin = false;
-        let currentUploadBase64 = '';
+        let uploadBuffer = '';
 
-        // --- SYNCHRONIZACJA DANYCH ---
-        function initDataSync() {
+        // --- SYNCHRONIZACJA (REAL-TIME) ---
+        function startSync() {
             if(!db) return;
             mainDocRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
-            onSnapshot(mainDocRef, (snapshot) => {
-                const statusEl = document.getElementById('cloud-status-text');
-                if(statusEl) {
-                    statusEl.innerText = "Online";
-                    statusEl.style.color = "#22c55e";
+            onSnapshot(mainDocRef, (snap) => {
+                document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
+                if (snap.exists()) {
+                    // Zachowaj userów (bo są w innej kolekcji) a nadpisz content
+                    const users = APP_DATA.users;
+                    APP_DATA = { ...snap.data(), users: users };
+                    refreshView();
+                } else if (isAdmin) {
+                    setDoc(mainDocRef, window.DEFAULT_DATA).catch(()=>{});
                 }
-                
-                if (snapshot.exists()) {
-                    const data = snapshot.data();
-                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
-                } else {
-                    // Tylko admin może zainicjować
-                    if(isAdmin) setDoc(mainDocRef, window.DEFAULT_DATA_TEMPLATE).catch(()=>{});
-                }
-            }, (error) => {
-                console.log("Sync status:", error.code);
+            }, (err) => {
+                console.log("Sync info:", err.code); // Ignoruj błędy uprawnień w konsoli
             });
         }
 
-        window.addEventListener('load', initDataSync);
-        window.addEventListener('cloudDataUpdated', (e) => {
-            if(e.detail) {
-                const usersBackup = APP_DATA.users; // Zachowaj userów
-                APP_DATA = { ...e.detail, users: usersBackup };
-                localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
-                renderAll();
-            }
-        });
-
-        // --- API ---
-        window.cloudAPI = {
-            login: (e, p) => signInWithEmailAndPassword(auth, e, p),
-            register: (e, p) => createUserWithEmailAndPassword(auth, e, p),
-            logout: () => signOut(auth),
-            updatePass: (p) => updatePassword(auth.currentUser, p),
-            
-            saveContent: async (newData) => {
-                // Zapisz lokalnie natychmiast
-                APP_DATA = newData;
-                renderAll();
-                localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
-                
-                // Wyślij do chmury
-                if(mainDocRef) {
-                    try { await setDoc(mainDocRef, newData, { merge: true }); }
-                    catch(e) { 
-                        if(e.code === 'permission-denied') showToast("Brak uprawnień Szefa (zmiana lokalna)", "warning");
-                        else console.error(e);
-                    }
-                }
-            },
-            
-            saveUserProfile: async (uid, data) => {
-                // Lokalnie
-                if(!APP_DATA.users) APP_DATA.users = {};
-                APP_DATA.users[uid] = { ...APP_DATA.users[uid], ...data };
-                renderAll();
-                updateUI();
-                
-                // Chmura
-                try {
-                    await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), data, { merge: true });
-                } catch(e) { console.warn("Nie udało się zapisać profilu w chmurze (błąd uprawnień?)"); }
-            },
-
-            fetchAllUsers: async () => {
-                try {
-                    const querySnapshot = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
-                    const usersMap = {};
-                    querySnapshot.forEach((doc) => { usersMap[doc.id] = doc.data(); });
-                    return usersMap;
-                } catch(e) { return {}; }
-            }
-        };
-
-        // --- OBSŁUGA LOGOWANIA ---
+        // --- AUTH LISTENER ---
         if(auth) {
             onAuthStateChanged(auth, async (user) => {
                 currentUser = user;
+                isAdmin = user && (user.email.toLowerCase() === BOSS_EMAIL.toLowerCase());
+                
+                updateNavState();
                 
                 if (user) {
-                    // 1. Sprawdź czy to SZEF (po emailu)
-                    isAdmin = (user.email && user.email.toLowerCase() === BOSS_EMAIL.toLowerCase());
-                    
-                    // 2. Pobierz profil z bazy (bezpiecznie)
+                    // Pobierz profil usera
                     try {
-                        const userDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
-                        if(userDoc.exists()) {
-                            APP_DATA.users[user.uid] = userDoc.data();
-                        } else {
-                            // Nowy profil
-                            const initialData = { 
-                                nick: user.email.split('@')[0], 
-                                role: isAdmin ? 'admin' : 'user', 
-                                email: user.email,
-                                avatar: '' 
-                            };
-                            window.cloudAPI.saveUserProfile(user.uid, initialData);
-                        }
+                        const uDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
+                        if(uDoc.exists()) APP_DATA.users[user.uid] = uDoc.data();
+                        else await saveMyProfile({ nick: user.email.split('@')[0], email: user.email });
                     } catch(e) {
-                        console.warn("Błąd pobierania profilu (może Rules?):", e);
-                        // Fallback: stwórz lokalny profil żeby UI działało
-                        if(!APP_DATA.users[user.uid]) {
-                            APP_DATA.users[user.uid] = { nick: user.email.split('@')[0], avatar: '' };
-                        }
+                        // Fallback offline/błąd
+                        if(!APP_DATA.users[user.uid]) APP_DATA.users[user.uid] = { nick: "Ja", email: user.email };
                     }
-
-                    // 3. Pobierz listę innych (w tle)
-                    window.cloudAPI.fetchAllUsers().then(users => {
-                        APP_DATA.users = { ...APP_DATA.users, ...users };
-                        renderAll();
-                    });
-
-                    showToast(isAdmin ? "Witaj Szefie!" : "Zalogowano");
-                } else {
-                    isAdmin = false;
+                    // Pobierz innych userów w tle
+                    loadAllUsers();
                 }
-                
-                updateUI();
-                renderAll();
+                refreshView();
             });
         }
 
-        // --- FUNKCJE UI ---
-        function updateUI() {
-            // Admin Panel
-            document.querySelectorAll('.admin-only').forEach(el => {
-                if(isAdmin) el.classList.remove('hidden');
-                else el.classList.add('hidden');
-            });
+        // --- API ---
+        window.api = {
+            login: (e, p) => signInWithEmailAndPassword(auth, e, p),
+            reg: (e, p) => createUserWithEmailAndPassword(auth, e, p),
+            out: () => signOut(auth),
+            
+            saveContent: async () => {
+                localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
+                refreshView();
+                if(mainDocRef && isAdmin) await setDoc(mainDocRef, APP_DATA, { merge: true });
+            },
+            
+            saveProfile: async (data) => saveMyProfile(data)
+        };
 
-            // Nav & Modal
-            if(currentUser) {
-                document.getElementById('user-menu-guest').classList.add('hidden');
-                document.getElementById('user-menu-logged').classList.remove('hidden');
-                document.getElementById('form-login').classList.add('hidden');
-                document.getElementById('auth-tabs').classList.add('hidden');
-                document.getElementById('user-profile-view').classList.remove('hidden');
-                document.getElementById('form-register').classList.add('hidden');
-
-                const myData = APP_DATA.users[currentUser.uid] || {};
-                const displayNick = myData.nick || currentUser.email.split('@')[0];
-                const displayAvatar = myData.avatar || `https://ui-avatars.com/api/?name=${displayNick}&background=random`;
-
-                document.getElementById('nav-user-avatar').src = displayAvatar;
-                document.getElementById('user-avatar-main').src = displayAvatar;
-                document.getElementById('user-display-name').innerText = displayNick;
-                document.getElementById('user-email-display').innerText = currentUser.email;
-                
-                // Formularz edycji
-                document.getElementById('edit-nick').value = displayNick;
-                document.getElementById('edit-avatar').value = myData.avatar || '';
-                
-                if(isAdmin) document.getElementById('admin-badge').classList.remove('hidden');
-                else document.getElementById('admin-badge').classList.add('hidden');
-
-            } else {
-                document.getElementById('user-menu-guest').classList.remove('hidden');
-                document.getElementById('user-menu-logged').classList.add('hidden');
-                document.getElementById('form-login').classList.remove('hidden');
-                document.getElementById('auth-tabs').classList.remove('hidden');
-                document.getElementById('user-profile-view').classList.add('hidden');
-                document.getElementById('form-register').classList.add('hidden');
-            }
-        }
-
-        // --- HANDLERY ---
-        async function handleLogin() {
-            setLoading('btn-login', true);
-            try {
-                await window.cloudAPI.login(
-                    document.getElementById('login-email').value, 
-                    document.getElementById('login-pass').value
-                );
-                closeModal();
-            } catch(e) { 
-                showToast("Błąd: " + e.message, "error"); 
-            } finally {
-                setLoading('btn-login', false);
-            }
-        }
-
-        async function handleRegister() {
-            setLoading('btn-reg', true);
-            try {
-                const cred = await window.cloudAPI.register(
-                    document.getElementById('reg-email').value, 
-                    document.getElementById('reg-pass').value
-                );
-                // Zapisz profil
-                const nick = document.getElementById('reg-nick').value;
-                await window.cloudAPI.saveUserProfile(cred.user.uid, {
-                    nick: nick,
-                    email: cred.user.email,
-                    role: 'user',
-                    joined: new Date().toISOString()
-                });
-                
-                closeModal();
-                showToast("Konto utworzone!");
-            } catch(e) {
-                showToast("Błąd: " + e.message, "error");
-            } finally {
-                setLoading('btn-reg', false);
-            }
-        }
-
-        async function saveProfileChanges() {
+        async function saveMyProfile(data) {
             if(!currentUser) return;
-            const newNick = document.getElementById('edit-nick').value;
-            const newAvatar = currentUploadBase64 || document.getElementById('edit-avatar').value;
-            const newPass = document.getElementById('edit-pass').value;
-
-            if(newPass) {
-                try { await window.cloudAPI.updatePass(newPass); showToast("Hasło zmienione"); }
-                catch(e) { showToast("Błąd hasła: " + e.message, "error"); return; }
-            }
-
-            const updateData = { nick: newNick };
-            if(newAvatar) updateData.avatar = newAvatar;
-
-            await window.cloudAPI.saveUserProfile(currentUser.uid, updateData);
-            showToast("Profil zaktualizowany!");
-            currentUploadBase64 = '';
-            document.getElementById('edit-pass').value = '';
+            const uid = currentUser.uid;
+            const finalData = { ...APP_DATA.users[uid], ...data };
+            APP_DATA.users[uid] = finalData;
+            
+            // UI Update natychmiast
+            updateNavState();
+            refreshView();
+            
+            // Cloud Update
+            try {
+                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), finalData, { merge: true });
+            } catch(e) { console.warn("Cloud save failed (rules?)"); }
         }
 
-        // --- RENDERERS ---
-        function renderAll() {
+        async function loadAllUsers() {
+            try {
+                const snap = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
+                snap.forEach(d => APP_DATA.users[d.id] = d.data());
+                refreshView();
+            } catch(e) {}
+        }
+
+        // --- LOGIKA UI ---
+        
+        // 1. Nawigacja
+        window.switchTab = (tabId) => {
+            document.querySelectorAll('.view-section').forEach(el => {
+                el.classList.add('hidden');
+                el.classList.remove('animate-fade-in');
+            });
+            const active = document.getElementById('view-' + tabId);
+            active.classList.remove('hidden');
+            active.classList.add('animate-fade-in');
+            
+            // Scroll to top
+            window.scrollTo(0,0);
+            
+            // Active state w menu
+            document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('text-brand-DEFAULT'));
+            document.getElementById('btn-'+tabId)?.classList.add('text-brand-DEFAULT');
+        };
+
+        // 2. Renderowanie
+        window.refreshView = () => {
+            renderHeader();
             renderBlog();
             renderShop();
-            renderAdminUsers();
-            
+            if(isAdmin) renderAdmin();
+        };
+
+        function renderHeader() {
             const c = APP_DATA.config;
-            if(c) {
-                const nameHtml = `${c.firstName}<span class="text-brand-purple">${c.lastName}</span>`;
-                document.getElementById('nav-logo').innerHTML = nameHtml;
-                document.getElementById('profile-name').innerHTML = nameHtml;
-                document.getElementById('profile-bio').innerText = c.bio;
-                document.getElementById('profile-avatar').src = c.avatarUrl;
-                document.getElementById('stat-yt').innerText = c.stats.youtube;
-                document.getElementById('stat-ig').innerText = c.stats.instagram;
-                document.getElementById('stat-proj').innerText = c.stats.projects;
-            }
+            document.getElementById('hero-name').innerText = c.firstName;
+            document.getElementById('hero-desc').innerText = c.bio;
+            document.getElementById('hero-avatar').src = c.avatarUrl;
+            document.getElementById('stat-yt').innerText = c.stats.youtube;
+            document.getElementById('stat-ig').innerText = c.stats.instagram;
+            document.getElementById('stat-proj').innerText = c.stats.projects;
         }
 
         function renderBlog() {
-            const container = document.getElementById('blog-container');
-            if(!APP_DATA.posts?.length) { container.innerHTML = '<div class="text-center p-10 text-gray-400">Brak postów</div>'; return; }
+            const list = document.getElementById('blog-list');
+            if(!APP_DATA.posts.length) { list.innerHTML = '<div class="text-gray-600 text-center py-10">Brak wpisów. Szefie, dodaj coś!</div>'; return; }
             
-            container.innerHTML = APP_DATA.posts.map(p => {
+            list.innerHTML = APP_DATA.posts.map(p => {
+                const isLiked = (p.likedBy || []).includes(currentUser?.uid);
+                
                 let media = '';
-                if(p.type === 'photo' && p.image) media = `<img src="${p.image}" class="w-full rounded-lg mb-3">`;
-                if(p.type === 'video') media = `<div class="bg-black text-white p-4 rounded-lg mb-3 text-center cursor-pointer"><i class="fas fa-play mb-2 block"></i>Wideo</div>`;
+                if(p.type === 'photo' && p.image) media = `<img src="${p.image}" class="w-full rounded-lg mb-4 shadow-lg">`;
+                if(p.type === 'video') media = `<div class="aspect-video bg-black rounded-lg mb-4 flex items-center justify-center cursor-pointer hover:bg-gray-900 transition" onclick="window.open('${p.videoUrl}', '_blank')"><i class="fas fa-play text-4xl text-white/80"></i></div>`;
 
-                const commentsHtml = (p.comments || []).map((c, i) => {
+                // Komentarze
+                const comments = (p.comments || []).map(c => {
                     const u = APP_DATA.users[c.uid] || {};
-                    const nick = u.nick || c.author || "Gość";
+                    const nick = u.nick || c.author || 'Gość';
                     const av = u.avatar || `https://ui-avatars.com/api/?name=${nick}&background=random`;
-                    return `<div class="text-sm mb-2 border-b border-gray-100 pb-1 flex gap-2">
-                        <img src="${av}" class="w-6 h-6 rounded-full object-cover">
-                        <div><span class="font-bold text-xs">${nick}:</span> <span class="text-gray-600 text-xs">${c.text}</span></div>
-                        ${isAdmin ? `<i onclick="deleteComment(${p.id}, ${i})" class="fas fa-times text-red-300 ml-auto cursor-pointer"></i>` : ''}
+                    return `
+                    <div class="flex gap-3 text-sm mb-3">
+                        <img src="${av}" class="w-8 h-8 rounded-full bg-dark-700 object-cover">
+                        <div class="bg-dark-700 p-2 rounded-lg rounded-tl-none flex-1">
+                            <span class="font-bold text-brand-DEFAULT text-xs block">${nick}</span>
+                            <span class="text-gray-300">${c.text}</span>
+                        </div>
+                        ${isAdmin ? `<button onclick="delComm(${p.id}, '${c.text}')" class="text-red-500 hover:text-red-400 self-center"><i class="fas fa-times"></i></button>` : ''}
                     </div>`;
                 }).join('');
 
-                return `<div class="bg-white p-5 rounded-2xl shadow-soft mb-6 relative group">
-                    ${isAdmin ? `<button onclick="deletePost(${p.id})" class="absolute top-2 right-2 text-red-500 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></button>` : ''}
+                return `
+                <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 shadow-xl mb-8 relative group">
+                    ${isAdmin ? `<button onclick="delPost(${p.id})" class="absolute top-4 right-4 bg-red-500/20 text-red-500 p-2 rounded-full hover:bg-red-500 hover:text-white transition"><i class="fas fa-trash"></i></button>` : ''}
+                    
+                    <h2 class="text-2xl font-bold mb-2 text-white">${p.title}</h2>
+                    <p class="text-gray-400 text-sm mb-4">${new Date(p.date).toLocaleDateString()}</p>
+                    
                     ${media}
-                    <h3 class="font-bold text-lg">${p.title}</h3>
-                    <p class="text-sm text-gray-600">${p.text}</p>
-                    <div class="flex justify-between items-center mt-3 text-xs text-gray-400">
-                        <span>${new Date(p.date).toLocaleDateString()}</span>
-                        <div class="flex gap-3">
-                            <button onclick="document.getElementById('comm-${p.id}').classList.toggle('hidden')"><i class="far fa-comment"></i> ${p.comments?.length||0}</button>
-                            <button onclick="likePost(${p.id})" class="${(p.likedBy||[]).includes(currentUser?.uid)?'text-red-500':''}"><i class="far fa-heart"></i> ${p.likes||0}</button>
-                        </div>
+                    
+                    <p class="text-gray-300 leading-relaxed mb-6">${p.text}</p>
+                    
+                    <div class="flex items-center gap-4 border-t border-dark-700 pt-4">
+                        <button onclick="toggleLike(${p.id})" class="flex items-center gap-2 px-4 py-2 rounded-full bg-dark-700 hover:bg-dark-600 transition ${isLiked ? 'text-red-500' : 'text-gray-400'}">
+                            <i class="${isLiked ? 'fas' : 'far'} fa-heart"></i> <span>${p.likes || 0}</span>
+                        </button>
+                        <button onclick="document.getElementById('c-box-${p.id}').classList.toggle('hidden')" class="flex items-center gap-2 px-4 py-2 rounded-full bg-dark-700 hover:bg-dark-600 transition text-gray-400">
+                            <i class="far fa-comment"></i> <span>${p.comments?.length || 0}</span>
+                        </button>
                     </div>
-                    <div id="comm-${p.id}" class="hidden mt-3 pt-3 border-t">
-                        <div class="max-h-32 overflow-y-auto mb-2">${commentsHtml}</div>
-                        ${currentUser ? `<div class="flex gap-2"><input id="in-c-${p.id}" class="w-full border rounded p-1 text-xs" placeholder="Napisz..."><button onclick="addComment(${p.id})" class="text-brand-purple"><i class="fas fa-paper-plane"></i></button></div>` : ''}
+
+                    <div id="c-box-${p.id}" class="hidden mt-4 pt-4 border-t border-dark-700 animate-fade-in">
+                        <div class="max-h-60 overflow-y-auto mb-4 pr-2 space-y-2 custom-scroll">${comments}</div>
+                        ${currentUser ? `
+                        <div class="flex gap-2">
+                            <input id="in-c-${p.id}" type="text" placeholder="Napisz komentarz..." class="w-full bg-dark-900 border border-dark-600 rounded-lg px-4 py-2 text-white focus:border-brand-DEFAULT outline-none">
+                            <button onclick="addComm(${p.id})" class="bg-brand-DEFAULT hover:bg-brand-hover text-white px-4 rounded-lg transition"><i class="fas fa-paper-plane"></i></button>
+                        </div>` : '<p class="text-center text-sm text-gray-500">Zaloguj się, aby komentować.</p>'}
                     </div>
                 </div>`;
             }).join('');
         }
 
         function renderShop() {
-            const el = document.getElementById('products-container');
-            if(APP_DATA.products?.length) {
-                el.innerHTML = APP_DATA.products.map(p => `
-                    <div class="bg-white p-4 rounded-xl shadow-sm relative group">
-                        ${isAdmin ? `<button onclick="deleteProduct(${p.id})" class="absolute top-2 right-2 text-red-500 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></button>` : ''}
-                        <img src="${p.img}" class="w-full h-32 object-cover rounded mb-2">
-                        <h4 class="font-bold text-sm">${p.name}</h4>
-                        <div class="flex justify-between items-center mt-2">
-                            <span class="text-xs bg-gray-100 px-2 py-1 rounded">${p.price} PLN</span>
-                            <button onclick="addToCart(${p.id})" class="text-brand-purple text-xs font-bold">DODAJ</button>
+            const list = document.getElementById('shop-list');
+            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Sklep wkrótce...</div>'; return; }
+            
+            list.innerHTML = APP_DATA.products.map(p => `
+                <div class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300">
+                    ${isAdmin ? `<button onclick="delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110 transition"><i class="fas fa-trash"></i></button>` : ''}
+                    <div class="aspect-square overflow-hidden bg-dark-900">
+                        <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-white mb-1 truncate">${p.name}</h3>
+                        <div class="flex justify-between items-center mt-3">
+                            <span class="text-brand-DEFAULT font-bold">${p.price} PLN</span>
+                            <button class="bg-white text-black px-3 py-1 rounded-lg text-xs font-bold hover:bg-gray-200 transition">DO KOSZYKA</button>
                         </div>
                     </div>
-                `).join('');
-            } else { el.innerHTML = '<p class="col-span-3 text-center text-gray-400">Brak produktów</p>'; }
+                </div>
+            `).join('');
         }
 
-        function renderAdminUsers() {
-            if(!isAdmin) return;
-            const list = Object.entries(APP_DATA.users || {}).map(([uid, u]) => `
-                <tr class="border-b text-xs">
-                    <td class="p-2 font-bold">${u.nick}</td>
-                    <td class="p-2 text-gray-500">${u.email}</td>
-                    <td class="p-2">${u.role}</td>
-                </tr>`).join('');
-            document.getElementById('admin-users-list').innerHTML = list;
-            document.getElementById('admin-user-count').innerText = Object.keys(APP_DATA.users).length;
+        function renderAdmin() {
+            const list = document.getElementById('admin-users-table');
+            const users = Object.entries(APP_DATA.users || {});
+            document.getElementById('admin-user-count').innerText = users.length;
+            
+            list.innerHTML = users.map(([uid, u]) => `
+                <tr class="border-b border-dark-700 hover:bg-dark-700/50 transition">
+                    <td class="p-3 font-bold text-white">${u.nick || '---'}</td>
+                    <td class="p-3 text-gray-400 text-sm">${u.email}</td>
+                    <td class="p-3"><span class="bg-dark-600 px-2 py-1 rounded text-xs">${u.role || 'user'}</span></td>
+                </tr>
+            `).join('');
         }
 
-        // --- AKCJE ---
-        function likePost(pid) {
-            if(!currentUser) return showToast("Zaloguj się", "error");
-            const p = APP_DATA.posts.find(x => x.id === pid);
+        // --- AKCJE LOGIKI (POSTY, KOMENTARZE, ADMIN) ---
+        window.toggleLike = (id) => {
+            if(!currentUser) return openModal('auth');
+            const p = APP_DATA.posts.find(x => x.id === id);
             if(!p.likedBy) p.likedBy = [];
             const uid = currentUser.uid;
-            if(p.likedBy.includes(uid)) { p.likedBy = p.likedBy.filter(x => x!==uid); p.likes--; }
-            else { p.likedBy.push(uid); p.likes++; }
-            window.cloudAPI.saveContent(APP_DATA);
-        }
-        function addComment(pid) {
-            const txt = document.getElementById(`in-c-${pid}`).value;
-            if(!txt) return;
-            const p = APP_DATA.posts.find(x => x.id === pid);
+            
+            if(p.likedBy.includes(uid)) {
+                p.likedBy = p.likedBy.filter(x => x !== uid);
+                p.likes--;
+            } else {
+                p.likedBy.push(uid);
+                p.likes++;
+            }
+            window.api.saveContent();
+        };
+
+        window.addComm = (id) => {
+            const inp = document.getElementById('in-c-'+id);
+            if(!inp.value.trim()) return;
+            const p = APP_DATA.posts.find(x => x.id === id);
             if(!p.comments) p.comments = [];
-            p.comments.push({ uid: currentUser.uid, text: txt, author: APP_DATA.users[currentUser.uid]?.nick });
-            window.cloudAPI.saveContent(APP_DATA);
-            document.getElementById(`in-c-${pid}`).value = '';
-        }
-        function deletePost(pid) { if(confirm("Usunąć?")) { APP_DATA.posts = APP_DATA.posts.filter(x=>x.id!==pid); window.cloudAPI.saveContent(APP_DATA); } }
-        function deleteProduct(pid) { if(confirm("Usunąć?")) { APP_DATA.products = APP_DATA.products.filter(x=>x.id!==pid); window.cloudAPI.saveContent(APP_DATA); } }
-        function deleteComment(pid, idx) { APP_DATA.posts.find(x=>x.id===pid).comments.splice(idx,1); window.cloudAPI.saveContent(APP_DATA); }
-        
-        function adminAddPost() {
-            const t = document.getElementById('admin-post-title').value;
-            if(!t) return;
+            
+            p.comments.push({ uid: currentUser.uid, text: inp.value.trim(), date: new Date().toISOString() });
+            window.api.saveContent();
+            inp.value = '';
+        };
+
+        // ADMIN FUNCTIONS
+        window.addPost = () => {
+            const t = document.getElementById('add-p-title').value;
+            if(!t) return alert("Podaj tytuł");
             APP_DATA.posts.unshift({
-                id: Date.now(), title: t, text: document.getElementById('admin-post-text').value,
-                type: document.getElementById('admin-post-type').value, image: currentUploadBase64,
-                date: new Date().toISOString(), likes: 0, likedBy: [], comments: []
+                id: Date.now(),
+                title: t,
+                text: document.getElementById('add-p-text').value,
+                type: document.getElementById('add-p-type').value,
+                image: uploadBuffer,
+                videoUrl: document.getElementById('add-p-video').value,
+                date: new Date().toISOString(),
+                likes: 0, likedBy: [], comments: []
             });
-            window.cloudAPI.saveContent(APP_DATA);
-            showToast("Dodano post");
-        }
-        function adminAddProduct() {
-            const n = document.getElementById('admin-prod-name').value;
+            window.api.saveContent();
+            uploadBuffer = '';
+            document.getElementById('add-p-title').value = '';
+            document.getElementById('add-p-file-label').innerText = 'Wybierz plik';
+            alert("Dodano!");
+        };
+
+        window.addProd = () => {
+            const n = document.getElementById('add-shop-name').value;
             if(!n) return;
             APP_DATA.products.push({
-                id: Date.now(), name: n, price: document.getElementById('admin-prod-price').value,
-                img: currentUploadBase64 || 'https://via.placeholder.com/150'
+                id: Date.now(),
+                name: n,
+                price: document.getElementById('add-shop-price').value,
+                img: uploadBuffer || 'https://via.placeholder.com/300'
             });
-            window.cloudAPI.saveContent(APP_DATA);
-            showToast("Dodano produkt");
-        }
+            window.api.saveContent();
+            uploadBuffer = '';
+            alert("Produkt dodany!");
+        };
 
-        // --- UTILS ---
-        function handleFile(e) {
+        window.delPost = (id) => { if(confirm('Usunąć?')) { APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== id); window.api.saveContent(); } };
+        window.delProd = (id) => { if(confirm('Usunąć?')) { APP_DATA.products = APP_DATA.products.filter(x => x.id !== id); window.api.saveContent(); } };
+        window.delComm = (pid, txt) => { 
+            const p = APP_DATA.posts.find(x => x.id === pid);
+            p.comments = p.comments.filter(c => c.text !== txt);
+            window.api.saveContent();
+        };
+
+        // --- OBSŁUGA PLIKÓW ---
+        window.handleFile = (e, labelId) => {
             const f = e.target.files[0];
             if(!f) return;
             const r = new FileReader();
@@ -432,143 +368,238 @@
                 img.onload = () => {
                     const c = document.createElement('canvas');
                     const ctx = c.getContext('2d');
-                    const s = Math.min(800/img.width, 1);
-                    c.width = img.width*s; c.height = img.height*s;
+                    const s = Math.min(1000/img.width, 1);
+                    c.width = img.width * s; c.height = img.height * s;
                     ctx.drawImage(img,0,0,c.width,c.height);
-                    currentUploadBase64 = c.toDataURL('image/jpeg',0.7);
-                    showToast("Gotowe");
+                    uploadBuffer = c.toDataURL('image/jpeg', 0.8);
+                    if(labelId) document.getElementById(labelId).innerText = "Gotowe!";
                 };
                 img.src = ev.target.result;
             };
             r.readAsDataURL(f);
-        }
-        function addToCart(id) { showToast("Dodano do koszyka"); } // Prosta wersja
-        function toggleCart() { document.getElementById('cart-modal').classList.toggle('hidden'); }
-        function showToast(m, t='success') {
-            const d = document.createElement('div');
-            d.className = `toast ${t}`; d.innerText = m;
-            document.getElementById('toast-container').appendChild(d);
-            setTimeout(()=>d.remove(), 3000);
-        }
-        function setLoading(id, s) {
-            const b = document.getElementById(id);
-            if(s) { b.disabled=true; b.innerHTML = '...'; }
-            else { b.disabled=false; b.innerHTML = b.id==='btn-reg'?'ZAŁÓŻ':'ZALOGUJ'; }
-        }
-        function handleAuthClick() {
-            if(currentUser) { 
-                document.getElementById('auth-modal').classList.remove('hidden'); 
-                document.getElementById('form-login').classList.add('hidden'); // Ensure login hidden
+        };
+
+        // --- UI HELPERS ---
+        function updateNavState() {
+            if(currentUser) {
+                document.getElementById('nav-auth-btn').classList.add('hidden');
+                document.getElementById('nav-user-profile').classList.remove('hidden');
+                
+                const u = APP_DATA.users[currentUser.uid] || {};
+                const av = u.avatar || `https://ui-avatars.com/api/?name=${currentUser.email}&background=8b5cf6&color=fff`;
+                document.getElementById('user-av-small').src = av;
+                document.getElementById('menu-av-large').src = av;
+                document.getElementById('menu-email').innerText = currentUser.email;
+                document.getElementById('menu-nick').innerText = u.nick || 'User';
+                
+                document.getElementById('menu-admin-badge').classList.toggle('hidden', !isAdmin);
+                document.getElementById('btn-admin').classList.toggle('hidden', !isAdmin);
+                
+                // Wypełnij pola edycji w menu
+                document.getElementById('edit-nick').value = u.nick || '';
+                document.getElementById('edit-av-url').value = u.avatar || '';
+            } else {
+                document.getElementById('nav-auth-btn').classList.remove('hidden');
+                document.getElementById('nav-user-profile').classList.add('hidden');
+                document.getElementById('btn-admin').classList.add('hidden');
             }
-            else { 
-                document.getElementById('auth-modal').classList.remove('hidden'); 
-                toggleAuthMode('login'); // Reset to login view
-            }
-        }
-        function closeModal() { document.getElementById('auth-modal').classList.add('hidden'); }
-        function toggleAuthMode(m) {
-            document.getElementById('form-login').classList.toggle('hidden', m!=='login');
-            document.getElementById('form-register').classList.toggle('hidden', m!=='reg');
-            document.getElementById('tab-login').className = m==='login' ? 'flex-1 pb-2 border-b-2 border-purple-600 font-bold' : 'flex-1 pb-2 text-gray-400';
-            document.getElementById('tab-register').className = m==='reg' ? 'flex-1 pb-2 border-b-2 border-purple-600 font-bold' : 'flex-1 pb-2 text-gray-400';
-        }
-        function switchTab(t) {
-            document.querySelectorAll('main > div').forEach(e=>e.classList.add('hidden'));
-            document.getElementById('view-'+t).classList.remove('hidden');
         }
 
-        renderAll();
+        window.openModal = (id) => document.getElementById('modal-'+id).classList.remove('hidden');
+        window.closeModal = (id) => document.getElementById('modal-'+id).classList.add('hidden');
+        
+        window.doLogin = async () => {
+            try { await window.api.login(document.getElementById('l-email').value, document.getElementById('l-pass').value); window.closeModal('auth'); }
+            catch(e) { alert("Błąd: " + e.message); }
+        };
+        
+        window.doReg = async () => {
+            try { 
+                const c = await window.api.reg(document.getElementById('r-email').value, document.getElementById('r-pass').value);
+                await window.api.saveProfile({ nick: document.getElementById('r-nick').value, email: c.user.email });
+                window.closeModal('auth');
+            } catch(e) { alert("Błąd: " + e.message); }
+        };
+
+        window.saveProfile = async () => {
+            const nick = document.getElementById('edit-nick').value;
+            const av = uploadBuffer || document.getElementById('edit-av-url').value;
+            const pass = document.getElementById('edit-pass').value;
+            
+            if(pass) { try { await window.api.updatePass(pass); alert("Hasło zmienione!"); } catch(e) { return alert(e.message); } }
+            
+            const data = { nick: nick };
+            if(av) data.avatar = av;
+            
+            await window.api.saveProfile(data);
+            uploadBuffer = '';
+            document.getElementById('user-menu').classList.add('translate-x-full'); // Zamknij menu
+        };
+
+        window.toggleUserMenu = () => {
+            const m = document.getElementById('user-menu');
+            m.classList.toggle('translate-x-full');
+        };
+
+        // Start
+        window.addEventListener('load', () => {
+            startSync();
+            switchTab('feed');
+        });
+
     </script>
 
     <style>
-        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
-        .toast { background: white; color: #111; padding: 10px 20px; border-left: 4px solid #8b5cf6; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); animation: slideIn 0.3s; font-size: 14px; font-weight: 500; }
-        .toast.error { border-left-color: #ef4444; }
-        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
-        .masonry-grid { column-count: 1; gap: 1.5rem; }
-        @media(min-width: 768px) { .masonry-grid { column-count: 2; } }
-        @media(min-width: 1024px) { .masonry-grid { column-count: 3; } }
+        body { background-color: #0f0f11; color: white; font-family: 'Outfit', sans-serif; }
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #18181b; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        /* Ukrywanie scrollbara w inputach file */
+        input[type="file"]::file-selector-button { @apply bg-dark-700 text-white border-0 py-2 px-4 rounded mr-2 cursor-pointer hover:bg-dark-600 transition; }
     </style>
 </head>
-<body class="bg-gray-100 text-gray-900 font-sans">
+<body class="overflow-x-hidden">
 
-    <!-- CLOUD STATUS -->
-    <div class="fixed bottom-2 left-2 bg-white px-3 py-1 rounded-full text-[10px] text-gray-400 border shadow flex items-center gap-2 z-50">
-        <div class="w-2 h-2 rounded-full bg-gray-300" id="cloud-status-text"></div> Stan
+    <!-- STATUS CHMURY -->
+    <div class="fixed bottom-4 left-4 z-50 flex items-center gap-2 opacity-50 hover:opacity-100 transition">
+        <div id="connection-dot" class="w-2 h-2 rounded-full bg-red-500"></div>
+        <span class="text-[10px] text-gray-500 uppercase tracking-widest">Server</span>
     </div>
-    <div id="toast-container"></div>
 
-    <!-- ADMIN BAR -->
-    <div id="admin-bar" class="admin-only hidden bg-gradient-to-r from-purple-600 to-pink-500 text-white text-center text-xs font-bold py-1">PANEL SZEFA</div>
-
-    <!-- NAV -->
-    <nav class="sticky top-0 bg-white/90 backdrop-blur border-b border-gray-200 z-40 h-16 flex items-center justify-between px-4 lg:px-8">
-        <div id="nav-logo" class="font-display font-black text-2xl tracking-tighter cursor-pointer" onclick="switchTab('feed')">HUB</div>
-        <div class="flex gap-6 text-sm font-bold text-gray-500">
-            <button onclick="switchTab('feed')" class="hover:text-purple-600">VLOG</button>
-            <button onclick="switchTab('shop')" class="hover:text-purple-600">SKLEP</button>
-            <button onclick="switchTab('admin')" class="admin-only hidden text-red-500 hover:text-red-700">ZARZĄDZAJ</button>
-        </div>
-        <div class="flex gap-4 items-center">
-            <div id="user-menu-guest" class="cursor-pointer" onclick="handleAuthClick()"><i class="far fa-user text-xl"></i></div>
-            <div id="user-menu-logged" class="hidden cursor-pointer group relative" onclick="handleAuthClick()">
-                <img id="nav-user-avatar" class="w-8 h-8 rounded-full border bg-gray-100 object-cover">
-                <div class="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-white rounded-full"></div>
+    <!-- NAVBAR -->
+    <nav class="fixed top-0 w-full bg-dark-900/90 backdrop-blur-md border-b border-dark-700 z-40 h-16">
+        <div class="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
+            <!-- LOGO -->
+            <div class="font-bold text-2xl tracking-tighter cursor-pointer select-none" onclick="switchTab('feed')">
+                HUB<span class="text-brand-DEFAULT">.</span>
             </div>
-            <div class="relative cursor-pointer" onclick="toggleCart()"><i class="fas fa-shopping-bag text-xl"></i></div>
+
+            <!-- MENU ŚRODEK -->
+            <div class="hidden md:flex gap-8 text-sm font-bold text-gray-400">
+                <button id="btn-feed" onclick="switchTab('feed')" class="nav-btn hover:text-white transition">VLOG</button>
+                <button id="btn-shop" onclick="switchTab('shop')" class="nav-btn hover:text-white transition">SKLEP</button>
+                <button id="btn-about" onclick="switchTab('about')" class="nav-btn hover:text-white transition">O MNIE</button>
+                <button id="btn-admin" onclick="switchTab('admin')" class="nav-btn hidden text-red-500 hover:text-red-400 transition flex items-center gap-2"><i class="fas fa-lock"></i> PANEL</button>
+            </div>
+
+            <!-- MENU PRAWE -->
+            <div class="flex items-center gap-4">
+                <!-- GUEST -->
+                <button id="nav-auth-btn" onclick="openModal('auth')" class="bg-white text-black px-5 py-2 rounded-full text-xs font-bold hover:bg-gray-200 transition">
+                    ZALOGUJ
+                </button>
+                <!-- LOGGED -->
+                <div id="nav-user-profile" class="hidden cursor-pointer relative group" onclick="toggleUserMenu()">
+                    <img id="user-av-small" src="" class="w-9 h-9 rounded-full bg-dark-700 object-cover border border-dark-600 group-hover:border-brand-DEFAULT transition">
+                </div>
+            </div>
         </div>
     </nav>
 
-    <main class="max-w-6xl mx-auto p-4 pt-8 pb-20">
-        
-        <!-- FEED -->
-        <div id="view-feed">
-            <div class="flex flex-col md:flex-row gap-8 mb-12 items-center md:items-start">
-                <img id="profile-avatar" class="w-32 h-32 rounded-full border-4 border-white shadow-lg object-cover">
-                <div class="flex-1 text-center md:text-left">
-                    <h1 id="profile-name" class="text-4xl font-display font-black mb-2">...</h1>
-                    <p id="profile-bio" class="text-gray-500 max-w-md">...</p>
+    <!-- CONTENT -->
+    <main class="pt-20 pb-20 px-4 max-w-5xl mx-auto min-h-screen">
+
+        <!-- VIEW: VLOG / FEED -->
+        <div id="view-feed" class="view-section animate-fade-in">
+            <!-- HEADER PROFILOWY -->
+            <div class="flex flex-col md:flex-row gap-8 items-center md:items-start mb-16 mt-8">
+                <div class="relative">
+                    <div class="absolute inset-0 bg-brand-DEFAULT blur-2xl opacity-20 rounded-full"></div>
+                    <img id="hero-avatar" src="" class="relative w-32 h-32 md:w-40 md:h-40 rounded-full object-cover border-4 border-dark-900 shadow-2xl">
                 </div>
-                <div class="flex gap-6 text-center">
-                    <div><div id="stat-yt" class="text-2xl font-black">-</div><div class="text-[10px] text-gray-400">YOUTUBE</div></div>
-                    <div><div id="stat-ig" class="text-2xl font-black">-</div><div class="text-[10px] text-gray-400">INSTA</div></div>
-                    <div><div id="stat-proj" class="text-2xl font-black">-</div><div class="text-[10px] text-gray-400">PROJEKTY</div></div>
+                <div class="flex-1 text-center md:text-left">
+                    <h1 id="hero-name" class="text-4xl md:text-6xl font-black mb-4 tracking-tight text-white">...</h1>
+                    <p id="hero-desc" class="text-gray-400 text-lg max-w-xl leading-relaxed">...</p>
+                    
+                    <div class="flex gap-8 justify-center md:justify-start mt-8">
+                        <div class="text-center"><div id="stat-yt" class="text-2xl font-bold text-white">-</div><div class="text-xs text-gray-500 font-bold tracking-widest">YOUTUBE</div></div>
+                        <div class="text-center"><div id="stat-ig" class="text-2xl font-bold text-white">-</div><div class="text-xs text-gray-500 font-bold tracking-widest">INSTA</div></div>
+                        <div class="text-center"><div id="stat-proj" class="text-2xl font-bold text-white">-</div><div class="text-xs text-gray-500 font-bold tracking-widest">PROJEKTY</div></div>
+                    </div>
                 </div>
             </div>
-            <div id="blog-container" class="masonry-grid"></div>
+
+            <div id="blog-list" class="max-w-2xl mx-auto">
+                <!-- Posty tu trafią -->
+            </div>
         </div>
 
-        <!-- SHOP -->
-        <div id="view-shop" class="hidden">
-            <h2 class="text-center text-3xl font-black mb-8">SKLEP</h2>
-            <div id="products-container" class="grid grid-cols-2 md:grid-cols-3 gap-4"></div>
+        <!-- VIEW: SKLEP -->
+        <div id="view-shop" class="view-section hidden">
+            <h2 class="text-4xl font-black mb-10 text-center">LIMITOWANY <span class="text-brand-DEFAULT">DROP</span></h2>
+            <div id="shop-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
         </div>
 
-        <!-- ADMIN -->
-        <div id="view-admin" class="hidden admin-only">
-            <div class="grid md:grid-cols-2 gap-8">
-                <div class="bg-white p-6 rounded-2xl border">
-                    <h3 class="font-bold mb-4">Dodaj Post</h3>
-                    <input id="admin-post-title" class="w-full border p-2 rounded mb-2" placeholder="Tytuł">
-                    <textarea id="admin-post-text" class="w-full border p-2 rounded mb-2" placeholder="Treść"></textarea>
-                    <select id="admin-post-type" class="w-full border p-2 rounded mb-2">
-                        <option value="status">Tekst</option>
-                        <option value="photo">Zdjęcie</option>
-                        <option value="video">Wideo</option>
-                    </select>
-                    <input type="file" onchange="handleFile(event)" class="mb-2 text-xs">
-                    <button onclick="adminAddPost()" class="w-full bg-purple-600 text-white font-bold p-2 rounded">Publikuj</button>
+        <!-- VIEW: O MNIE -->
+        <div id="view-about" class="view-section hidden">
+            <div class="bg-dark-800 p-8 rounded-3xl border border-dark-700 max-w-3xl mx-auto text-center">
+                <h2 class="text-3xl font-bold mb-6">Moja Historia</h2>
+                <p class="text-gray-300 leading-loose">
+                    Tutaj możesz napisać dłuższą historię o sobie. O tym jak zacząłeś, co Cię motywuje i dokąd zmierzasz. 
+                    Ten tekst jest statyczny, ale możesz go łatwo zmienić w kodzie HTML w sekcji "DEFAULT_DATA".
+                </p>
+                <div class="mt-8 flex justify-center gap-4">
+                    <a href="#" class="text-2xl text-gray-400 hover:text-white transition"><i class="fab fa-instagram"></i></a>
+                    <a href="#" class="text-2xl text-gray-400 hover:text-white transition"><i class="fab fa-youtube"></i></a>
                 </div>
-                <div class="bg-white p-6 rounded-2xl border">
-                    <h3 class="font-bold mb-4">Dodaj Produkt</h3>
-                    <input id="admin-prod-name" class="w-full border p-2 rounded mb-2" placeholder="Nazwa">
-                    <input id="admin-prod-price" class="w-full border p-2 rounded mb-2" placeholder="Cena">
-                    <button onclick="adminAddProduct()" class="w-full bg-green-600 text-white font-bold p-2 rounded">Dodaj</button>
+            </div>
+        </div>
+
+        <!-- VIEW: ADMIN PANEL -->
+        <div id="view-admin" class="view-section hidden">
+            <h2 class="text-3xl font-black mb-8 border-b border-dark-700 pb-4 text-red-500">CENTRUM DOWODZENIA</h2>
+            
+            <div class="grid lg:grid-cols-2 gap-8">
+                <!-- NOWY POST -->
+                <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700">
+                    <h3 class="font-bold text-xl mb-4 text-white">Dodaj Wpis</h3>
+                    <input id="add-p-title" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white focus:border-brand-DEFAULT outline-none" placeholder="Tytuł posta">
+                    <textarea id="add-p-text" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none focus:border-brand-DEFAULT outline-none" placeholder="Co tam słychać?"></textarea>
+                    
+                    <div class="flex gap-2 mb-3">
+                        <select id="add-p-type" class="bg-dark-900 border border-dark-600 rounded-lg px-3 text-sm text-gray-300">
+                            <option value="status">Tekst</option>
+                            <option value="photo">Zdjęcie</option>
+                            <option value="video">Video</option>
+                        </select>
+                        <input id="add-p-video" class="flex-1 bg-dark-900 border border-dark-600 p-2 rounded-lg text-sm text-white" placeholder="Link do YouTube (dla wideo)">
+                    </div>
+                    
+                    <div class="flex items-center gap-3 mb-4">
+                        <input type="file" id="add-p-file" class="hidden" onchange="handleFile(event, 'add-p-file-label')">
+                        <label for="add-p-file" id="add-p-file-label" class="cursor-pointer bg-dark-700 px-4 py-2 rounded-lg text-xs font-bold hover:bg-dark-600 transition text-gray-300">
+                            <i class="fas fa-camera mr-2"></i> Wybierz fotę
+                        </label>
+                    </div>
+
+                    <button onclick="addPost()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-3 rounded-xl transition shadow-lg shadow-brand-DEFAULT/20">OPUBLIKUJ</button>
                 </div>
-                <div class="bg-white p-6 rounded-2xl border md:col-span-2">
-                    <h3 class="font-bold mb-4">Użytkownicy (<span id="admin-user-count">0</span>)</h3>
-                    <div class="overflow-y-auto max-h-60">
-                        <table class="w-full text-left"><tbody id="admin-users-list"></tbody></table>
+
+                <!-- NOWY PRODUKT -->
+                <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 h-fit">
+                    <h3 class="font-bold text-xl mb-4 text-white">Dodaj do Sklepu</h3>
+                    <input id="add-shop-name" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Nazwa produktu">
+                    <div class="flex gap-3 mb-4">
+                        <input id="add-shop-price" type="number" class="w-1/3 bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Cena">
+                        <div class="flex-1 flex items-center">
+                            <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
+                        </div>
+                    </div>
+                    <button onclick="addProd()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition">DODAJ PRODUKT</button>
+                </div>
+
+                <!-- UŻYTKOWNICY -->
+                <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 lg:col-span-2">
+                    <h3 class="font-bold text-xl mb-4 text-white">Baza Użytkowników (<span id="admin-user-count">0</span>)</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="text-gray-500 uppercase text-xs border-b border-dark-700">
+                                <tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th></tr>
+                            </thead>
+                            <tbody id="admin-users-table"></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -576,67 +607,63 @@
 
     </main>
 
-    <!-- AUTH MODAL -->
-    <div id="auth-modal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center hidden p-4 backdrop-blur-sm">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 relative max-h-[90vh] overflow-y-auto">
-            <button onclick="closeModal()" class="absolute top-4 right-4 text-gray-400 hover:text-black"><i class="fas fa-times"></i></button>
-            
-            <!-- TABS -->
-            <div id="auth-tabs" class="flex border-b mb-6">
-                <button onclick="toggleAuthMode('login')" id="tab-login" class="flex-1 pb-2 border-b-2 border-purple-600 font-bold">Logowanie</button>
-                <button onclick="toggleAuthMode('reg')" id="tab-register" class="flex-1 pb-2 text-gray-400">Rejestracja</button>
-            </div>
-            
-            <!-- LOGIN FORM -->
-            <div id="form-login">
-                <input id="login-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
-                <input id="login-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło">
-                <button id="btn-login" onclick="handleLogin()" class="w-full bg-purple-600 text-white font-bold p-3 rounded hover:bg-purple-700">ZALOGUJ</button>
-            </div>
-
-            <!-- REGISTER FORM -->
-            <div id="form-register" class="hidden">
-                <input id="reg-nick" class="w-full border p-3 rounded mb-3" placeholder="Nick">
-                <input id="reg-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
-                <input id="reg-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło (min 6 znaków)">
-                <button id="btn-reg" onclick="handleRegister()" class="w-full bg-black text-white font-bold p-3 rounded hover:bg-gray-800">ZAŁÓŻ KONTO</button>
-            </div>
-
-            <!-- USER PROFILE VIEW -->
-            <div id="user-profile-view" class="hidden text-center">
-                <h2 class="font-bold text-xl mb-4 border-b pb-2">TWÓJ PROFIL</h2>
-                <img id="user-avatar-main" class="w-24 h-24 rounded-full mx-auto mb-2 border bg-gray-100 object-cover shadow-lg">
-                <h3 id="user-display-name" class="font-bold text-lg">...</h3>
-                <p id="user-email-display" class="text-xs text-gray-400 mb-4">...</p>
-                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-100 text-red-600 text-xs font-bold px-2 py-1 rounded border border-red-200">SZEF</span></div>
-
-                <div class="text-left bg-gray-50 p-4 rounded-xl mb-4 space-y-2">
-                    <p class="text-[10px] font-bold text-gray-400 uppercase">EDYCJA DANYCH</p>
-                    <input id="edit-nick" class="w-full border p-2 rounded text-sm bg-white" placeholder="Nick">
-                    <input id="edit-avatar" class="w-full border p-2 rounded text-sm bg-white" placeholder="Link do avatara (URL)">
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs text-gray-400">lub plik:</span>
-                        <input type="file" onchange="handleFile(event)" class="text-xs w-full">
-                    </div>
-                    <input id="edit-pass" type="password" class="w-full border p-2 rounded text-sm bg-white" placeholder="Nowe hasło (opcjonalnie)">
-                    <button onclick="saveProfileChanges()" class="w-full bg-gray-800 text-white font-bold p-2 rounded text-xs hover:bg-black mt-2">ZAPISZ ZMIANY</button>
-                </div>
-
-                <button onclick="window.cloudAPI.logout(); closeModal();" class="w-full border border-red-200 text-red-500 font-bold p-2 rounded hover:bg-red-50 text-sm">WYLOGUJ</button>
-            </div>
+    <!-- SIDEBAR USER MENU (PRAWY PANEL) -->
+    <div id="user-menu" class="fixed top-0 right-0 h-full w-80 bg-dark-800 border-l border-dark-700 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 p-6 flex flex-col">
+        <button onclick="toggleUserMenu()" class="absolute top-4 left-4 text-gray-400 hover:text-white"><i class="fas fa-times text-xl"></i></button>
+        
+        <div class="mt-8 text-center">
+            <img id="menu-av-large" src="" class="w-24 h-24 rounded-full mx-auto mb-4 border-2 border-dark-600 object-cover">
+            <h3 id="menu-nick" class="text-xl font-bold text-white">User</h3>
+            <p id="menu-email" class="text-sm text-gray-500 mb-2">...</p>
+            <span id="menu-admin-badge" class="hidden bg-red-500/20 text-red-500 text-xs font-bold px-2 py-1 rounded">ADMIN</span>
         </div>
+
+        <div class="mt-8 space-y-4 flex-1 overflow-y-auto">
+            <div class="space-y-2">
+                <label class="text-xs font-bold text-gray-500 uppercase">Zmień Nick</label>
+                <input id="edit-nick" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm">
+            </div>
+            <div class="space-y-2">
+                <label class="text-xs font-bold text-gray-500 uppercase">Avatar (Link lub Plik)</label>
+                <input id="edit-av-url" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm mb-1" placeholder="https://...">
+                <input type="file" onchange="handleFile(event)" class="text-xs text-gray-500 w-full">
+            </div>
+            <div class="space-y-2">
+                <label class="text-xs font-bold text-gray-500 uppercase">Nowe Hasło</label>
+                <input id="edit-pass" type="password" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm" placeholder="Opcjonalne">
+            </div>
+            <button onclick="saveProfile()" class="w-full bg-dark-700 hover:bg-brand-DEFAULT text-white font-bold py-2 rounded transition">ZAPISZ ZMIANY</button>
+        </div>
+
+        <button onclick="window.api.out(); toggleUserMenu()" class="mt-auto w-full border border-red-500/30 text-red-500 hover:bg-red-500 hover:text-white font-bold py-3 rounded transition">WYLOGUJ</button>
     </div>
 
-    <!-- CART -->
-    <div id="cart-modal" class="hidden fixed inset-0 z-50 flex justify-end">
-        <div class="absolute inset-0 bg-black/50" onclick="toggleCart()"></div>
-        <div class="bg-white w-full max-w-md h-full relative p-6 shadow-2xl flex flex-col">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="font-black text-2xl">KOSZYK</h2>
-                <button onclick="toggleCart()"><i class="fas fa-times text-xl"></i></button>
+    <!-- MODAL AUTH -->
+    <div id="modal-auth" class="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center hidden backdrop-blur-sm p-4">
+        <div class="bg-dark-800 w-full max-w-sm rounded-2xl border border-dark-600 p-8 relative">
+            <button onclick="closeModal('auth')" class="absolute top-4 right-4 text-gray-500 hover:text-white"><i class="fas fa-times"></i></button>
+            <h2 class="text-2xl font-bold text-center mb-6 text-white">Dołącz do nas</h2>
+            
+            <!-- TABS -->
+            <div class="flex mb-6 border-b border-dark-700">
+                <button onclick="document.getElementById('form-l').classList.remove('hidden');document.getElementById('form-r').classList.add('hidden');" class="flex-1 pb-2 text-brand-DEFAULT font-bold border-b-2 border-brand-DEFAULT">Logowanie</button>
+                <button onclick="document.getElementById('form-r').classList.remove('hidden');document.getElementById('form-l').classList.add('hidden');" class="flex-1 pb-2 text-gray-500 hover:text-white transition">Rejestracja</button>
             </div>
-            <div class="flex-1 flex items-center justify-center text-gray-400">Koszyk jest pusty</div>
-            <button class="w-full bg-purple-600 text-white font-bold p-4 rounded-xl mt-4">DO KASY</button>
+
+            <!-- LOGIN -->
+            <div id="form-l" class="space-y-3">
+                <input id="l-email" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Email">
+                <input id="l-pass" type="password" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Hasło">
+                <button onclick="doLogin()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-3 rounded-lg transition mt-2">ZALOGUJ</button>
+            </div>
+
+            <!-- REGISTER -->
+            <div id="form-r" class="space-y-3 hidden">
+                <input id="r-nick" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Twój Nick">
+                <input id="r-email" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Email">
+                <input id="r-pass" type="password" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Hasło (min 6 znaków)">
+                <button onclick="doReg()" class="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 transition mt-2">ZAŁÓŻ KONTO</button>
+            </div>
         </div>
     </div>
 
