@@ -59,8 +59,6 @@
                     window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: snapshot.data() }));
                 } else {
                     console.log("Baza pusta. Próba inicjalizacji...");
-                    // Jeśli baza jest pusta, próbujemy ją utworzyć.
-                    // Zadziała to tylko jeśli jesteś adminem (zgodnie z Rules).
                     if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
                         .catch(err => console.log("Czekam na dane (Brak uprawnień do zapisu bazy)."));
                 }
@@ -85,17 +83,18 @@
         // Eksport API
         window.cloudAPI = {
             auth: auth,
-            // Funkcja sprawdzająca czy jestem adminem (próba zapisu)
+            // Funkcja sprawdzająca czy jestem adminem (z timeoutem, żeby nie wisiało)
             checkAdminPermissions: async () => {
                 if(!auth.currentUser) return false;
                 try {
-                    // Próbujemy zapisać nieszkodliwą flagę timestamp
-                    // Używamy setDoc z merge, żeby zadziałało nawet jak dokument nie istnieje
-                    await setDoc(docRef, { _lastAdminCheck: Date.now() }, { merge: true });
+                    // Timeout 3 sekundy - jeśli baza nie odpowie, uznajemy że to nie admin
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000));
+                    const check = setDoc(docRef, { _lastAdminCheck: Date.now() }, { merge: true });
+                    
+                    await Promise.race([check, timeout]);
                     return true;
                 } catch(e) {
                     // Jeśli błąd "permission-denied" -> Nie jesteś Adminem
-                    console.warn("Check Admin failed:", e.code);
                     return false;
                 }
             },
@@ -105,9 +104,8 @@
                 try { 
                     await setDoc(docRef, newData, { merge: true }); 
                 } catch (e) { 
-                    console.error("Błąd zapisu:", e);
                     if(e.code === 'permission-denied') showToast("Brak uprawnień! (Tylko Właściciel)", "error");
-                    else showToast("Błąd zapisu: " + e.message, "error");
+                    else showToast("Błąd zapisu (Jesteś offline?)", "error");
                 }
             },
             login: async (email, pass) => {
@@ -467,6 +465,14 @@
             APP_DATA = cached ? JSON.parse(cached) : JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
         } catch(e) { APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE)); }
 
+        // --- ZABEZPIECZENIE DANYCH ---
+        if (!APP_DATA || typeof APP_DATA !== 'object') {
+            APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+        }
+        if (!APP_DATA.posts) APP_DATA.posts = [];
+        if (!APP_DATA.products) APP_DATA.products = [];
+        if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
+
         let currentUser = null; 
         let currentUserRole = 'guest';
         let currentPostImageBase64 = '';
@@ -592,6 +598,9 @@
                 document.getElementById('auth-tabs').classList.add('hidden');
                 document.getElementById('user-profile-view').classList.remove('hidden');
                 
+                // Zabezpieczenie przed undefined userRoles
+                if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
+                
                 const userData = APP_DATA.userRoles[currentUser.email] || {};
                 const displayNick = userData.nick || currentUser.email.split('@')[0];
                 const displayAvatar = userData.avatar || `https://ui-avatars.com/api/?name=${displayNick}&background=8b5cf6&color=fff`;
@@ -643,16 +652,10 @@
 
             // Zapisz do bazy globalnej
             try {
-                // Jeśli jesteś adminem -> save() zadziała.
-                // Jeśli jesteś userem -> save() może zostać odrzucone przez Rules, 
-                // ALE: w tej wersji "baza w jednym pliku" userzy nie mogą nadpisywać pliku Admina.
-                // Więc jeśli save() nie przejdzie, aktualizujemy tylko lokalnie dla widoku.
-                // (W prawdziwej aplikacji userzy mieliby osobne dokumenty, tutaj upraszczamy)
                 if(currentUserRole === 'admin') {
                     await window.cloudAPI.save(APP_DATA);
                     showToast("Profil zapisany!");
                 } else {
-                    // Dla usera: spróbuj zapisać, jak nie to tylko lokalnie
                     updateAppData(APP_DATA);
                     showToast("Zapisano (lokalnie/admin mode off)");
                 }
@@ -667,13 +670,17 @@
             const email = document.getElementById('login-email').value;
             const pass = document.getElementById('login-password').value;
             if(!email || !pass) return showToast("Podaj email i hasło", "error");
+            
             setLoading('btn-login-action', true);
             try {
                 await window.cloudAPI.login(email, pass);
-                // Nie zamykamy od razu, czekamy na onAuth i checkAdmin
+                closeAuthModal(); // Zamknij modal natychmiast po sukcesie
+                showToast("Zalogowano! Trwa weryfikacja...", "success");
             } catch (e) { 
-                showToast("Błąd logowania: " + e.message, "error"); 
-                setLoading('btn-login-action', false);
+                showToast("Błąd: " + e.message, "error"); 
+            } 
+            finally { 
+                setLoading('btn-login-action', false); // ZAWSZE wyłącz spinner
             } 
         }
 
@@ -688,10 +695,9 @@
                 if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
                 APP_DATA.userRoles[email] = { role: 'user', nick: nick };
                 
-                // Próba zapisu nowego usera (może się nie udać jeśli rules blokują, ale lokalnie zadziała)
                 updateAppData(APP_DATA);
                 
-                // closeAuthModal(); // Zostawmy otwarte żeby zobaczył profil
+                closeAuthModal(); 
                 showToast("Konto założone! Witaj " + nick);
             } catch (e) { showToast("Błąd: " + e.message, "error"); } 
             finally { setLoading('btn-reg-action', false); }
