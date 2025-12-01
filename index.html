@@ -24,7 +24,7 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        // Twój email Szefa - musi pasować do tego w Rules w Firebase
+        // --- 👑 EMAIL SZEFA (Musi być identyczny jak w Firebase Rules) ---
         const BOSS_EMAIL = "adrianniekil@gmail.com";
 
         let app, auth, db, mainDocRef;
@@ -35,73 +35,7 @@
             db = getFirestore(app);
         } catch (e) { console.error("Firebase init error", e); }
 
-        // --- SYNCHRONIZACJA DANYCH ---
-        function initDataSync() {
-            // Główny dokument z postami i produktami
-            mainDocRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
-
-            onSnapshot(mainDocRef, (snapshot) => {
-                document.getElementById('cloud-status-text').innerText = "Online";
-                document.getElementById('cloud-status-text').style.color = "#22c55e";
-                
-                if (snapshot.exists()) {
-                    const data = snapshot.data();
-                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
-                } else {
-                    // Inicjalizacja bazy (tylko Szef da radę to zrobić przez Rules)
-                    if(window.DEFAULT_DATA_TEMPLATE) setDoc(mainDocRef, window.DEFAULT_DATA_TEMPLATE).catch(e=>{});
-                }
-            }, (error) => {
-                if(error.code === 'permission-denied') {
-                    console.log("Tryb tylko do odczytu (Gość/User)");
-                }
-            });
-        }
-
-        window.addEventListener('load', initDataSync);
-
-        // --- API ---
-        window.cloudAPI = {
-            auth: auth,
-            // Zapis głównych danych (Posty/Produkty) - Tylko dla Szefa
-            saveContent: async (newData) => {
-                window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData })); // Optymistycznie
-                try { await setDoc(mainDocRef, newData, { merge: true }); } 
-                catch (e) { 
-                    if(e.code === 'permission-denied') showToast("Tylko Szef może edytować treść!", "error");
-                    else console.error(e);
-                }
-            },
-            // Zapis profilu użytkownika (do osobnej kolekcji) - Dla każdego
-            saveUserProfile: async (uid, data) => {
-                try {
-                    await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), data, { merge: true });
-                    // Odśwież lokalnie
-                    if(!APP_DATA.users) APP_DATA.users = {};
-                    APP_DATA.users[uid] = { ...APP_DATA.users[uid], ...data };
-                    renderAll(); 
-                    updateUI(); // Odśwież widok profilu od razu
-                } catch(e) { 
-                    console.error("Save profile error", e); 
-                    showToast("Błąd zapisu profilu: " + e.message, "error");
-                }
-            },
-            // Pobranie wszystkich użytkowników (Dla Admina i do wyświetlania komentarzy)
-            fetchAllUsers: async () => {
-                try {
-                    const querySnapshot = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
-                    const usersMap = {};
-                    querySnapshot.forEach((doc) => { usersMap[doc.id] = doc.data(); });
-                    return usersMap;
-                } catch(e) { return {}; }
-            },
-            login: (e, p) => signInWithEmailAndPassword(auth, e, p),
-            register: (e, p) => createUserWithEmailAndPassword(auth, e, p),
-            logout: () => signOut(auth),
-            updatePass: (p) => updatePassword(auth.currentUser, p)
-        };
-
-        // --- LOGIKA APLIKACJI ---
+        // --- DANE LOKALNE ---
         window.DEFAULT_DATA_TEMPLATE = {
             config: {
                 firstName: "ADRION", lastName: "___",   
@@ -115,56 +49,137 @@
             products: []
         };
 
-        const CACHE_KEY = 'hub_data_v2';
+        const CACHE_KEY = 'hub_data_v3';
         let APP_DATA = JSON.parse(localStorage.getItem(CACHE_KEY) || JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
-        // Lokalny cache użytkowników (do szybkiego wyświetlania)
-        APP_DATA.users = APP_DATA.users || {};
+        if(!APP_DATA.users) APP_DATA.users = {};
 
         let currentUser = null;
         let isAdmin = false;
         let currentUploadBase64 = '';
 
-        // Obsługa aktualizacji z chmury
+        // --- SYNCHRONIZACJA DANYCH ---
+        function initDataSync() {
+            if(!db) return;
+            mainDocRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+
+            onSnapshot(mainDocRef, (snapshot) => {
+                const statusEl = document.getElementById('cloud-status-text');
+                if(statusEl) {
+                    statusEl.innerText = "Online";
+                    statusEl.style.color = "#22c55e";
+                }
+                
+                if (snapshot.exists()) {
+                    const data = snapshot.data();
+                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
+                } else {
+                    // Tylko admin może zainicjować
+                    if(isAdmin) setDoc(mainDocRef, window.DEFAULT_DATA_TEMPLATE).catch(()=>{});
+                }
+            }, (error) => {
+                console.log("Sync status:", error.code);
+            });
+        }
+
+        window.addEventListener('load', initDataSync);
         window.addEventListener('cloudDataUpdated', (e) => {
             if(e.detail) {
-                // Zachowaj users, bo przychodzą tylko posty/produkty z głównego pliku
-                const usersBackup = APP_DATA.users;
-                APP_DATA = e.detail;
-                APP_DATA.users = usersBackup || {}; 
+                const usersBackup = APP_DATA.users; // Zachowaj userów
+                APP_DATA = { ...e.detail, users: usersBackup };
+                localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
                 renderAll();
             }
         });
 
-        // Obsługa logowania
-        if(window.cloudAPI) {
+        // --- API ---
+        window.cloudAPI = {
+            login: (e, p) => signInWithEmailAndPassword(auth, e, p),
+            register: (e, p) => createUserWithEmailAndPassword(auth, e, p),
+            logout: () => signOut(auth),
+            updatePass: (p) => updatePassword(auth.currentUser, p),
+            
+            saveContent: async (newData) => {
+                // Zapisz lokalnie natychmiast
+                APP_DATA = newData;
+                renderAll();
+                localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
+                
+                // Wyślij do chmury
+                if(mainDocRef) {
+                    try { await setDoc(mainDocRef, newData, { merge: true }); }
+                    catch(e) { 
+                        if(e.code === 'permission-denied') showToast("Brak uprawnień Szefa (zmiana lokalna)", "warning");
+                        else console.error(e);
+                    }
+                }
+            },
+            
+            saveUserProfile: async (uid, data) => {
+                // Lokalnie
+                if(!APP_DATA.users) APP_DATA.users = {};
+                APP_DATA.users[uid] = { ...APP_DATA.users[uid], ...data };
+                renderAll();
+                updateUI();
+                
+                // Chmura
+                try {
+                    await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), data, { merge: true });
+                } catch(e) { console.warn("Nie udało się zapisać profilu w chmurze (błąd uprawnień?)"); }
+            },
+
+            fetchAllUsers: async () => {
+                try {
+                    const querySnapshot = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
+                    const usersMap = {};
+                    querySnapshot.forEach((doc) => { usersMap[doc.id] = doc.data(); });
+                    return usersMap;
+                } catch(e) { return {}; }
+            }
+        };
+
+        // --- OBSŁUGA LOGOWANIA ---
+        if(auth) {
             onAuthStateChanged(auth, async (user) => {
                 currentUser = user;
+                
                 if (user) {
-                    // Sprawdź czy to szef
-                    isAdmin = (user.email === BOSS_EMAIL);
+                    // 1. Sprawdź czy to SZEF (po emailu)
+                    isAdmin = (user.email && user.email.toLowerCase() === BOSS_EMAIL.toLowerCase());
                     
-                    // Pobierz aktualne dane użytkownika z bazy
-                    const userDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
-                    if(userDoc.exists()) {
-                        APP_DATA.users[user.uid] = userDoc.data();
-                    } else {
-                        // Jeśli nie ma profilu w bazie (np. stare konto), stwórz go
-                        const initialData = { nick: user.email.split('@')[0], role: isAdmin ? 'admin' : 'user', email: user.email };
-                        await window.cloudAPI.saveUserProfile(user.uid, initialData);
-                        APP_DATA.users[user.uid] = initialData;
+                    // 2. Pobierz profil z bazy (bezpiecznie)
+                    try {
+                        const userDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
+                        if(userDoc.exists()) {
+                            APP_DATA.users[user.uid] = userDoc.data();
+                        } else {
+                            // Nowy profil
+                            const initialData = { 
+                                nick: user.email.split('@')[0], 
+                                role: isAdmin ? 'admin' : 'user', 
+                                email: user.email,
+                                avatar: '' 
+                            };
+                            window.cloudAPI.saveUserProfile(user.uid, initialData);
+                        }
+                    } catch(e) {
+                        console.warn("Błąd pobierania profilu (może Rules?):", e);
+                        // Fallback: stwórz lokalny profil żeby UI działało
+                        if(!APP_DATA.users[user.uid]) {
+                            APP_DATA.users[user.uid] = { nick: user.email.split('@')[0], avatar: '' };
+                        }
                     }
 
-                    // Pobierz listę wszystkich użytkowników (żeby widzieć ich nicki/avatary)
-                    // Robimy to w tle żeby nie blokować UI
-                    window.cloudAPI.fetchAllUsers().then(allUsers => {
-                        APP_DATA.users = { ...APP_DATA.users, ...allUsers };
+                    // 3. Pobierz listę innych (w tle)
+                    window.cloudAPI.fetchAllUsers().then(users => {
+                        APP_DATA.users = { ...APP_DATA.users, ...users };
                         renderAll();
                     });
-                    
-                    showToast(isAdmin ? "Witaj Szefie!" : "Zalogowano pomyślnie");
+
+                    showToast(isAdmin ? "Witaj Szefie!" : "Zalogowano");
                 } else {
                     isAdmin = false;
                 }
+                
                 updateUI();
                 renderAll();
             });
@@ -172,68 +187,89 @@
 
         // --- FUNKCJE UI ---
         function updateUI() {
-            // Admin panel toggle
-            const adminElements = document.querySelectorAll('.admin-only');
-            adminElements.forEach(el => isAdmin ? el.classList.remove('hidden') : el.classList.add('hidden'));
+            // Admin Panel
+            document.querySelectorAll('.admin-only').forEach(el => {
+                if(isAdmin) el.classList.remove('hidden');
+                else el.classList.add('hidden');
+            });
 
-            // Navbar items
+            // Nav & Modal
             if(currentUser) {
                 document.getElementById('user-menu-guest').classList.add('hidden');
                 document.getElementById('user-menu-logged').classList.remove('hidden');
-                // Avatar w nav
-                const myProfile = APP_DATA.users[currentUser.uid] || {};
-                const avatarSrc = myProfile.avatar || `https://ui-avatars.com/api/?name=${currentUser.email}&background=random`;
-                document.getElementById('nav-user-avatar').src = avatarSrc;
-                
-                // Modal Profile View
-                document.getElementById('user-display-name').innerText = myProfile.nick || "Użytkownik";
+                document.getElementById('form-login').classList.add('hidden');
+                document.getElementById('auth-tabs').classList.add('hidden');
+                document.getElementById('user-profile-view').classList.remove('hidden');
+                document.getElementById('form-register').classList.add('hidden');
+
+                const myData = APP_DATA.users[currentUser.uid] || {};
+                const displayNick = myData.nick || currentUser.email.split('@')[0];
+                const displayAvatar = myData.avatar || `https://ui-avatars.com/api/?name=${displayNick}&background=random`;
+
+                document.getElementById('nav-user-avatar').src = displayAvatar;
+                document.getElementById('user-avatar-main').src = displayAvatar;
+                document.getElementById('user-display-name').innerText = displayNick;
                 document.getElementById('user-email-display').innerText = currentUser.email;
-                document.getElementById('user-avatar-main').src = avatarSrc;
                 
-                // Form Fields
-                document.getElementById('edit-nick').value = myProfile.nick || "";
-                document.getElementById('edit-avatar').value = myProfile.avatar || "";
+                // Formularz edycji
+                document.getElementById('edit-nick').value = displayNick;
+                document.getElementById('edit-avatar').value = myData.avatar || '';
                 
-                document.getElementById('admin-badge').style.display = isAdmin ? 'inline-block' : 'none';
+                if(isAdmin) document.getElementById('admin-badge').classList.remove('hidden');
+                else document.getElementById('admin-badge').classList.add('hidden');
+
             } else {
                 document.getElementById('user-menu-guest').classList.remove('hidden');
                 document.getElementById('user-menu-logged').classList.add('hidden');
+                document.getElementById('form-login').classList.remove('hidden');
+                document.getElementById('auth-tabs').classList.remove('hidden');
+                document.getElementById('user-profile-view').classList.add('hidden');
+                document.getElementById('form-register').classList.add('hidden');
             }
         }
 
-        // --- AKCJE UŻYTKOWNIKA ---
+        // --- HANDLERY ---
         async function handleLogin() {
             setLoading('btn-login', true);
             try {
-                await window.cloudAPI.login(document.getElementById('login-email').value, document.getElementById('login-pass').value);
+                await window.cloudAPI.login(
+                    document.getElementById('login-email').value, 
+                    document.getElementById('login-pass').value
+                );
                 closeModal();
-            } catch(e) { showToast("Błąd: " + e.message, "error"); }
-            setLoading('btn-login', false);
+            } catch(e) { 
+                showToast("Błąd: " + e.message, "error"); 
+            } finally {
+                setLoading('btn-login', false);
+            }
         }
 
         async function handleRegister() {
             setLoading('btn-reg', true);
-            const email = document.getElementById('reg-email').value;
-            const pass = document.getElementById('reg-pass').value;
-            const nick = document.getElementById('reg-nick').value;
             try {
-                const cred = await window.cloudAPI.register(email, pass);
-                // Tworzymy profil w bazie 'users'
+                const cred = await window.cloudAPI.register(
+                    document.getElementById('reg-email').value, 
+                    document.getElementById('reg-pass').value
+                );
+                // Zapisz profil
+                const nick = document.getElementById('reg-nick').value;
                 await window.cloudAPI.saveUserProfile(cred.user.uid, {
                     nick: nick,
-                    email: email,
+                    email: cred.user.email,
                     role: 'user',
-                    avatar: '',
                     joined: new Date().toISOString()
                 });
+                
                 closeModal();
                 showToast("Konto utworzone!");
-            } catch(e) { showToast("Błąd: " + e.message, "error"); }
-            setLoading('btn-reg', false);
+            } catch(e) {
+                showToast("Błąd: " + e.message, "error");
+            } finally {
+                setLoading('btn-reg', false);
+            }
         }
 
-        // Funkcja do zapisu profilu (Naprawiona nazwa!)
-        async function handleUpdateProfile() {
+        async function saveProfileChanges() {
             if(!currentUser) return;
             const newNick = document.getElementById('edit-nick').value;
             const newAvatar = currentUploadBase64 || document.getElementById('edit-avatar').value;
@@ -249,49 +285,8 @@
 
             await window.cloudAPI.saveUserProfile(currentUser.uid, updateData);
             showToast("Profil zaktualizowany!");
-            currentUploadBase64 = ''; // Reset
-            document.getElementById('edit-pass').value = ''; // Reset pola hasła
-        }
-
-        // --- ADMIN ACTIONS ---
-        function adminAddPost() {
-            if(!isAdmin) return;
-            const title = document.getElementById('admin-post-title').value;
-            if(!title) return showToast("Brak tytułu", "error");
-            
-            const newPost = {
-                id: Date.now(),
-                title: title,
-                text: document.getElementById('admin-post-text').value,
-                type: document.getElementById('admin-post-type').value,
-                image: currentUploadBase64,
-                videoUrl: document.getElementById('admin-post-video').value,
-                date: new Date().toISOString(),
-                likes: 0, likedBy: [], comments: []
-            };
-            
-            APP_DATA.posts.unshift(newPost);
-            window.cloudAPI.saveContent(APP_DATA);
-            showToast("Opublikowano");
             currentUploadBase64 = '';
-        }
-
-        function adminAddProduct() {
-            if(!isAdmin) return;
-            const name = document.getElementById('admin-prod-name').value;
-            if(!name) return;
-            
-            const prod = {
-                id: Date.now(),
-                name: name,
-                price: document.getElementById('admin-prod-price').value,
-                img: currentUploadBase64 || 'https://via.placeholder.com/300',
-                label: document.getElementById('admin-prod-label').value
-            };
-            APP_DATA.products.push(prod);
-            window.cloudAPI.saveContent(APP_DATA);
-            showToast("Produkt dodany");
-            currentUploadBase64 = '';
+            document.getElementById('edit-pass').value = '';
         }
 
         // --- RENDERERS ---
@@ -300,17 +295,16 @@
             renderShop();
             renderAdminUsers();
             
-            // Profil Info
-            const config = APP_DATA.config;
-            if(config) {
-                document.getElementById('nav-logo').innerHTML = `${config.firstName || 'HUB'}<span class="text-brand-purple">${config.lastName || ''}</span>`;
-                document.getElementById('profile-name').innerHTML = document.getElementById('nav-logo').innerHTML;
-                document.getElementById('profile-bio').innerText = config.bio || '';
-                if(config.avatarUrl) document.getElementById('profile-avatar').src = config.avatarUrl;
-                
-                document.getElementById('stat-yt').innerText = config.stats?.youtube || '-';
-                document.getElementById('stat-ig').innerText = config.stats?.instagram || '-';
-                document.getElementById('stat-proj').innerText = config.stats?.projects || '-';
+            const c = APP_DATA.config;
+            if(c) {
+                const nameHtml = `${c.firstName}<span class="text-brand-purple">${c.lastName}</span>`;
+                document.getElementById('nav-logo').innerHTML = nameHtml;
+                document.getElementById('profile-name').innerHTML = nameHtml;
+                document.getElementById('profile-bio').innerText = c.bio;
+                document.getElementById('profile-avatar').src = c.avatarUrl;
+                document.getElementById('stat-yt').innerText = c.stats.youtube;
+                document.getElementById('stat-ig').innerText = c.stats.instagram;
+                document.getElementById('stat-proj').innerText = c.stats.projects;
             }
         }
 
@@ -321,110 +315,111 @@
             container.innerHTML = APP_DATA.posts.map(p => {
                 let media = '';
                 if(p.type === 'photo' && p.image) media = `<img src="${p.image}" class="w-full rounded-lg mb-3">`;
-                if(p.type === 'video') media = `<div class="bg-black text-white p-4 rounded-lg mb-3 text-center cursor-pointer" onclick="window.open('${p.videoUrl}', '_blank')"><i class="fas fa-play mb-2 block"></i>Otwórz Wideo</div>`;
+                if(p.type === 'video') media = `<div class="bg-black text-white p-4 rounded-lg mb-3 text-center cursor-pointer"><i class="fas fa-play mb-2 block"></i>Wideo</div>`;
 
-                // Komentarze
                 const commentsHtml = (p.comments || []).map((c, i) => {
-                    // Pobieramy dane usera z cache (dzięki fetchAllUsers)
-                    const userProfile = APP_DATA.users[c.uid] || {};
-                    const authorNick = userProfile.nick || c.author || "Anonim";
-                    const authorAvatar = userProfile.avatar || `https://ui-avatars.com/api/?name=${authorNick}&background=random`;
-
-                    return `<div class="text-sm mb-3 pb-2 border-b border-gray-100 last:border-0 relative group/comment flex gap-3 items-start">
-                        <img src="${authorAvatar}" class="w-8 h-8 rounded-full object-cover bg-gray-200 mt-1">
-                        <div class="flex-1">
-                            <span class="font-bold text-black mr-2 block text-xs">${authorNick}</span>
-                            <span class="text-gray-600 block text-xs leading-relaxed">${c.text}</span>
-                        </div>
-                        ${isAdmin ? `<i class="fas fa-times text-red-400 cursor-pointer opacity-0 group-hover:opacity-100 p-1" onclick="deleteComment(${p.id}, ${i})"></i>` : ''}
-                    </div>`
+                    const u = APP_DATA.users[c.uid] || {};
+                    const nick = u.nick || c.author || "Gość";
+                    const av = u.avatar || `https://ui-avatars.com/api/?name=${nick}&background=random`;
+                    return `<div class="text-sm mb-2 border-b border-gray-100 pb-1 flex gap-2">
+                        <img src="${av}" class="w-6 h-6 rounded-full object-cover">
+                        <div><span class="font-bold text-xs">${nick}:</span> <span class="text-gray-600 text-xs">${c.text}</span></div>
+                        ${isAdmin ? `<i onclick="deleteComment(${p.id}, ${i})" class="fas fa-times text-red-300 ml-auto cursor-pointer"></i>` : ''}
+                    </div>`;
                 }).join('');
 
-                return `
-                <div class="bg-white p-5 rounded-2xl shadow-soft mb-6 break-inside-avoid relative group">
-                    ${isAdmin ? `<button onclick="deletePost(${p.id})" class="absolute top-2 right-2 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i class="fas fa-trash"></i></button>` : ''}
+                return `<div class="bg-white p-5 rounded-2xl shadow-soft mb-6 relative group">
+                    ${isAdmin ? `<button onclick="deletePost(${p.id})" class="absolute top-2 right-2 text-red-500 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></button>` : ''}
                     ${media}
-                    <h3 class="font-bold text-lg text-black">${p.title}</h3>
-                    <p class="text-sm text-gray-600 mt-1">${p.text || ''}</p>
-                    <div class="flex justify-between items-center mt-4 text-xs text-gray-400">
+                    <h3 class="font-bold text-lg">${p.title}</h3>
+                    <p class="text-sm text-gray-600">${p.text}</p>
+                    <div class="flex justify-between items-center mt-3 text-xs text-gray-400">
                         <span>${new Date(p.date).toLocaleDateString()}</span>
                         <div class="flex gap-3">
-                            <button onclick="document.getElementById('comments-${p.id}').classList.toggle('hidden')"><i class="far fa-comment"></i> ${p.comments?.length || 0}</button>
-                            <button onclick="likePost(${p.id})" class="${(p.likedBy||[]).includes(currentUser?.uid) ? 'text-red-500' : ''}"><i class="far fa-heart"></i> ${p.likes || 0}</button>
+                            <button onclick="document.getElementById('comm-${p.id}').classList.toggle('hidden')"><i class="far fa-comment"></i> ${p.comments?.length||0}</button>
+                            <button onclick="likePost(${p.id})" class="${(p.likedBy||[]).includes(currentUser?.uid)?'text-red-500':''}"><i class="far fa-heart"></i> ${p.likes||0}</button>
                         </div>
                     </div>
-                    <div id="comments-${p.id}" class="hidden mt-3 pt-3 border-t border-gray-100">
-                        <div class="max-h-40 overflow-y-auto mb-2 pr-1">${commentsHtml}</div>
-                        ${currentUser ? `<div class="flex gap-2"><input id="comment-in-${p.id}" class="w-full bg-gray-50 border p-2 rounded-lg text-xs text-black" placeholder="Napisz..."><button onclick="addComment(${p.id})" class="text-brand-purple p-2"><i class="fas fa-paper-plane"></i></button></div>` : '<p class="text-xs text-gray-400">Zaloguj się, aby skomentować</p>'}
+                    <div id="comm-${p.id}" class="hidden mt-3 pt-3 border-t">
+                        <div class="max-h-32 overflow-y-auto mb-2">${commentsHtml}</div>
+                        ${currentUser ? `<div class="flex gap-2"><input id="in-c-${p.id}" class="w-full border rounded p-1 text-xs" placeholder="Napisz..."><button onclick="addComment(${p.id})" class="text-brand-purple"><i class="fas fa-paper-plane"></i></button></div>` : ''}
                     </div>
                 </div>`;
             }).join('');
         }
 
-        function renderAdminUsers() {
-            if(!isAdmin) return;
-            const tbody = document.getElementById('admin-users-list');
-            if(!tbody) return;
-            
-            const users = Object.entries(APP_DATA.users || {});
-            document.getElementById('admin-user-count').innerText = users.length;
-            
-            tbody.innerHTML = users.map(([uid, u]) => `
-                <tr class="border-b border-gray-100 text-sm">
-                    <td class="p-3">
-                        <div class="font-bold text-black">${u.nick || 'Bez nicku'}</div>
-                        <div class="text-xs text-gray-400">${u.email || '...'}</div>
-                    </td>
-                    <td class="p-3">${u.role || 'user'}</td>
-                    <td class="p-3 text-right text-xs text-gray-400">${uid.substr(0,5)}...</td>
-                </tr>
-            `).join('');
+        function renderShop() {
+            const el = document.getElementById('products-container');
+            if(APP_DATA.products?.length) {
+                el.innerHTML = APP_DATA.products.map(p => `
+                    <div class="bg-white p-4 rounded-xl shadow-sm relative group">
+                        ${isAdmin ? `<button onclick="deleteProduct(${p.id})" class="absolute top-2 right-2 text-red-500 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></button>` : ''}
+                        <img src="${p.img}" class="w-full h-32 object-cover rounded mb-2">
+                        <h4 class="font-bold text-sm">${p.name}</h4>
+                        <div class="flex justify-between items-center mt-2">
+                            <span class="text-xs bg-gray-100 px-2 py-1 rounded">${p.price} PLN</span>
+                            <button onclick="addToCart(${p.id})" class="text-brand-purple text-xs font-bold">DODAJ</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else { el.innerHTML = '<p class="col-span-3 text-center text-gray-400">Brak produktów</p>'; }
         }
 
-        // --- AKCJE LOGIKI ---
+        function renderAdminUsers() {
+            if(!isAdmin) return;
+            const list = Object.entries(APP_DATA.users || {}).map(([uid, u]) => `
+                <tr class="border-b text-xs">
+                    <td class="p-2 font-bold">${u.nick}</td>
+                    <td class="p-2 text-gray-500">${u.email}</td>
+                    <td class="p-2">${u.role}</td>
+                </tr>`).join('');
+            document.getElementById('admin-users-list').innerHTML = list;
+            document.getElementById('admin-user-count').innerText = Object.keys(APP_DATA.users).length;
+        }
+
+        // --- AKCJE ---
         function likePost(pid) {
             if(!currentUser) return showToast("Zaloguj się", "error");
             const p = APP_DATA.posts.find(x => x.id === pid);
             if(!p.likedBy) p.likedBy = [];
             const uid = currentUser.uid;
-            if(p.likedBy.includes(uid)) {
-                p.likedBy = p.likedBy.filter(x => x !== uid);
-                p.likes--;
-            } else {
-                p.likedBy.push(uid);
-                p.likes++;
-            }
+            if(p.likedBy.includes(uid)) { p.likedBy = p.likedBy.filter(x => x!==uid); p.likes--; }
+            else { p.likedBy.push(uid); p.likes++; }
             window.cloudAPI.saveContent(APP_DATA);
         }
-
         function addComment(pid) {
-            const txt = document.getElementById(`comment-in-${pid}`).value;
+            const txt = document.getElementById(`in-c-${pid}`).value;
             if(!txt) return;
             const p = APP_DATA.posts.find(x => x.id === pid);
             if(!p.comments) p.comments = [];
-            
-            // Zapisz UID autora, żeby pobierać zawsze świeży nick/avatar
-            p.comments.push({ 
-                author: APP_DATA.users[currentUser.uid]?.nick || "Ja", 
-                text: txt, 
-                uid: currentUser.uid 
+            p.comments.push({ uid: currentUser.uid, text: txt, author: APP_DATA.users[currentUser.uid]?.nick });
+            window.cloudAPI.saveContent(APP_DATA);
+            document.getElementById(`in-c-${pid}`).value = '';
+        }
+        function deletePost(pid) { if(confirm("Usunąć?")) { APP_DATA.posts = APP_DATA.posts.filter(x=>x.id!==pid); window.cloudAPI.saveContent(APP_DATA); } }
+        function deleteProduct(pid) { if(confirm("Usunąć?")) { APP_DATA.products = APP_DATA.products.filter(x=>x.id!==pid); window.cloudAPI.saveContent(APP_DATA); } }
+        function deleteComment(pid, idx) { APP_DATA.posts.find(x=>x.id===pid).comments.splice(idx,1); window.cloudAPI.saveContent(APP_DATA); }
+        
+        function adminAddPost() {
+            const t = document.getElementById('admin-post-title').value;
+            if(!t) return;
+            APP_DATA.posts.unshift({
+                id: Date.now(), title: t, text: document.getElementById('admin-post-text').value,
+                type: document.getElementById('admin-post-type').value, image: currentUploadBase64,
+                date: new Date().toISOString(), likes: 0, likedBy: [], comments: []
             });
-            
             window.cloudAPI.saveContent(APP_DATA);
-            // Wyczyść input
-            document.getElementById(`comment-in-${pid}`).value = '';
+            showToast("Dodano post");
         }
-
-        function deletePost(pid) {
-            if(confirm("Usunąć?")) {
-                APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== pid);
-                window.cloudAPI.saveContent(APP_DATA);
-            }
-        }
-        function deleteComment(pid, idx) {
-            const p = APP_DATA.posts.find(x => x.id === pid);
-            p.comments.splice(idx, 1);
+        function adminAddProduct() {
+            const n = document.getElementById('admin-prod-name').value;
+            if(!n) return;
+            APP_DATA.products.push({
+                id: Date.now(), name: n, price: document.getElementById('admin-prod-price').value,
+                img: currentUploadBase64 || 'https://via.placeholder.com/150'
+            });
             window.cloudAPI.saveContent(APP_DATA);
+            showToast("Dodano produkt");
         }
 
         // --- UTILS ---
@@ -433,68 +428,61 @@
             if(!f) return;
             const r = new FileReader();
             r.onload = (ev) => {
-                // Resize logic
                 const img = new Image();
                 img.onload = () => {
                     const c = document.createElement('canvas');
                     const ctx = c.getContext('2d');
-                    const scale = Math.min(800/img.width, 1);
-                    c.width = img.width * scale;
-                    c.height = img.height * scale;
+                    const s = Math.min(800/img.width, 1);
+                    c.width = img.width*s; c.height = img.height*s;
                     ctx.drawImage(img,0,0,c.width,c.height);
-                    currentUploadBase64 = c.toDataURL('image/jpeg', 0.7);
-                    showToast("Zdjęcie gotowe");
+                    currentUploadBase64 = c.toDataURL('image/jpeg',0.7);
+                    showToast("Gotowe");
                 };
                 img.src = ev.target.result;
             };
             r.readAsDataURL(f);
         }
-
-        function showToast(msg, type='success') {
-            const t = document.createElement('div');
-            t.className = `toast ${type}`;
-            t.innerText = msg;
-            document.getElementById('toast-container').appendChild(t);
-            setTimeout(() => t.remove(), 3000);
-        }
-        function setLoading(id, s) { 
-            const b = document.getElementById(id); 
-            if(s) { b.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>'; b.disabled=true; } 
-            else { b.innerHTML = b.parentElement.id === 'form-register' ? 'ZAŁÓŻ KONTO' : 'ZALOGUJ'; b.disabled=false; } 
-        }
-        function switchTab(t) {
-            document.querySelectorAll('main > div').forEach(d => d.classList.add('hidden'));
-            document.getElementById('view-'+t).classList.remove('hidden');
-        }
+        function addToCart(id) { showToast("Dodano do koszyka"); } // Prosta wersja
         function toggleCart() { document.getElementById('cart-modal').classList.toggle('hidden'); }
-        function handleAuthClick() { 
-            if(currentUser) {
-                // Show profile modal
-                document.getElementById('auth-modal').classList.remove('hidden');
-                document.getElementById('user-view').classList.remove('hidden');
-                document.getElementById('login-view').classList.add('hidden');
-            } else {
-                document.getElementById('auth-modal').classList.remove('hidden');
-                document.getElementById('user-view').classList.add('hidden');
-                document.getElementById('login-view').classList.remove('hidden');
+        function showToast(m, t='success') {
+            const d = document.createElement('div');
+            d.className = `toast ${t}`; d.innerText = m;
+            document.getElementById('toast-container').appendChild(d);
+            setTimeout(()=>d.remove(), 3000);
+        }
+        function setLoading(id, s) {
+            const b = document.getElementById(id);
+            if(s) { b.disabled=true; b.innerHTML = '...'; }
+            else { b.disabled=false; b.innerHTML = b.id==='btn-reg'?'ZAŁÓŻ':'ZALOGUJ'; }
+        }
+        function handleAuthClick() {
+            if(currentUser) { 
+                document.getElementById('auth-modal').classList.remove('hidden'); 
+                document.getElementById('form-login').classList.add('hidden'); // Ensure login hidden
+            }
+            else { 
+                document.getElementById('auth-modal').classList.remove('hidden'); 
+                toggleAuthMode('login'); // Reset to login view
             }
         }
         function closeModal() { document.getElementById('auth-modal').classList.add('hidden'); }
-        function toggleAuthMode(mode) {
-            if(mode === 'reg') {
-                document.getElementById('form-login').classList.add('hidden');
-                document.getElementById('form-register').classList.remove('hidden');
-            } else {
-                document.getElementById('form-login').classList.remove('hidden');
-                document.getElementById('form-register').classList.add('hidden');
-            }
+        function toggleAuthMode(m) {
+            document.getElementById('form-login').classList.toggle('hidden', m!=='login');
+            document.getElementById('form-register').classList.toggle('hidden', m!=='reg');
+            document.getElementById('tab-login').className = m==='login' ? 'flex-1 pb-2 border-b-2 border-purple-600 font-bold' : 'flex-1 pb-2 text-gray-400';
+            document.getElementById('tab-register').className = m==='reg' ? 'flex-1 pb-2 border-b-2 border-purple-600 font-bold' : 'flex-1 pb-2 text-gray-400';
         }
+        function switchTab(t) {
+            document.querySelectorAll('main > div').forEach(e=>e.classList.add('hidden'));
+            document.getElementById('view-'+t).classList.remove('hidden');
+        }
+
+        renderAll();
     </script>
 
-    <!-- STYLE UŻYTKOWE -->
     <style>
         #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
-        .toast { background: white; color: #111; padding: 10px 20px; border-left: 4px solid #8b5cf6; border-radius: 8px; shadow: 0 5px 15px rgba(0,0,0,0.1); animation: slideIn 0.3s; font-size: 14px; font-weight: 500; }
+        .toast { background: white; color: #111; padding: 10px 20px; border-left: 4px solid #8b5cf6; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); animation: slideIn 0.3s; font-size: 14px; font-weight: 500; }
         .toast.error { border-left-color: #ef4444; }
         @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
         .masonry-grid { column-count: 1; gap: 1.5rem; }
@@ -515,22 +503,19 @@
 
     <!-- NAV -->
     <nav class="sticky top-0 bg-white/90 backdrop-blur border-b border-gray-200 z-40 h-16 flex items-center justify-between px-4 lg:px-8">
-        <div id="nav-logo" class="font-display font-black text-2xl tracking-tighter">HUB</div>
+        <div id="nav-logo" class="font-display font-black text-2xl tracking-tighter cursor-pointer" onclick="switchTab('feed')">HUB</div>
         <div class="flex gap-6 text-sm font-bold text-gray-500">
             <button onclick="switchTab('feed')" class="hover:text-purple-600">VLOG</button>
             <button onclick="switchTab('shop')" class="hover:text-purple-600">SKLEP</button>
             <button onclick="switchTab('admin')" class="admin-only hidden text-red-500 hover:text-red-700">ZARZĄDZAJ</button>
         </div>
         <div class="flex gap-4 items-center">
-            <!-- Ikona usera -->
             <div id="user-menu-guest" class="cursor-pointer" onclick="handleAuthClick()"><i class="far fa-user text-xl"></i></div>
-            <div id="user-menu-logged" class="hidden cursor-pointer" onclick="handleAuthClick()">
+            <div id="user-menu-logged" class="hidden cursor-pointer group relative" onclick="handleAuthClick()">
                 <img id="nav-user-avatar" class="w-8 h-8 rounded-full border bg-gray-100 object-cover">
+                <div class="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-white rounded-full"></div>
             </div>
-            
-            <div class="relative cursor-pointer" onclick="toggleCart()">
-                <i class="fas fa-shopping-bag text-xl"></i>
-            </div>
+            <div class="relative cursor-pointer" onclick="toggleCart()"><i class="fas fa-shopping-bag text-xl"></i></div>
         </div>
     </nav>
 
@@ -572,25 +557,19 @@
                         <option value="video">Wideo</option>
                     </select>
                     <input type="file" onchange="handleFile(event)" class="mb-2 text-xs">
-                    <input id="admin-post-video" class="w-full border p-2 rounded mb-2" placeholder="Link YT">
                     <button onclick="adminAddPost()" class="w-full bg-purple-600 text-white font-bold p-2 rounded">Publikuj</button>
                 </div>
-                
-                <div class="bg-white p-6 rounded-2xl border">
-                    <h3 class="font-bold mb-4">Użytkownicy (<span id="admin-user-count">0</span>)</h3>
-                    <div class="overflow-y-auto max-h-60">
-                        <table class="w-full text-left">
-                            <tbody id="admin-users-list"></tbody>
-                        </table>
-                    </div>
-                </div>
-
                 <div class="bg-white p-6 rounded-2xl border">
                     <h3 class="font-bold mb-4">Dodaj Produkt</h3>
                     <input id="admin-prod-name" class="w-full border p-2 rounded mb-2" placeholder="Nazwa">
                     <input id="admin-prod-price" class="w-full border p-2 rounded mb-2" placeholder="Cena">
-                    <input id="admin-prod-label" class="w-full border p-2 rounded mb-2" placeholder="Label">
                     <button onclick="adminAddProduct()" class="w-full bg-green-600 text-white font-bold p-2 rounded">Dodaj</button>
+                </div>
+                <div class="bg-white p-6 rounded-2xl border md:col-span-2">
+                    <h3 class="font-bold mb-4">Użytkownicy (<span id="admin-user-count">0</span>)</h3>
+                    <div class="overflow-y-auto max-h-60">
+                        <table class="w-full text-left"><tbody id="admin-users-list"></tbody></table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -598,50 +577,52 @@
     </main>
 
     <!-- AUTH MODAL -->
-    <div id="auth-modal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center hidden p-4">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 relative">
+    <div id="auth-modal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center hidden p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 relative max-h-[90vh] overflow-y-auto">
             <button onclick="closeModal()" class="absolute top-4 right-4 text-gray-400 hover:text-black"><i class="fas fa-times"></i></button>
             
-            <!-- LOGIN VIEW -->
-            <div id="login-view">
-                <div class="flex border-b mb-6">
-                    <button onclick="toggleAuthMode('login')" class="flex-1 pb-2 border-b-2 border-purple-600 font-bold">Logowanie</button>
-                    <button onclick="toggleAuthMode('reg')" class="flex-1 pb-2 text-gray-400">Rejestracja</button>
-                </div>
-                
-                <div id="form-login">
-                    <input id="login-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
-                    <input id="login-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło">
-                    <button id="btn-login" onclick="handleLogin()" class="w-full bg-purple-600 text-white font-bold p-3 rounded hover:bg-purple-700">ZALOGUJ</button>
-                </div>
+            <!-- TABS -->
+            <div id="auth-tabs" class="flex border-b mb-6">
+                <button onclick="toggleAuthMode('login')" id="tab-login" class="flex-1 pb-2 border-b-2 border-purple-600 font-bold">Logowanie</button>
+                <button onclick="toggleAuthMode('reg')" id="tab-register" class="flex-1 pb-2 text-gray-400">Rejestracja</button>
+            </div>
+            
+            <!-- LOGIN FORM -->
+            <div id="form-login">
+                <input id="login-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
+                <input id="login-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło">
+                <button id="btn-login" onclick="handleLogin()" class="w-full bg-purple-600 text-white font-bold p-3 rounded hover:bg-purple-700">ZALOGUJ</button>
+            </div>
 
-                <div id="form-register" class="hidden">
-                    <input id="reg-nick" class="w-full border p-3 rounded mb-3" placeholder="Nick">
-                    <input id="reg-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
-                    <input id="reg-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło (min 6 znaków)">
-                    <button id="btn-reg" onclick="handleRegister()" class="w-full bg-black text-white font-bold p-3 rounded hover:bg-gray-800">ZAŁÓŻ KONTO</button>
-                </div>
+            <!-- REGISTER FORM -->
+            <div id="form-register" class="hidden">
+                <input id="reg-nick" class="w-full border p-3 rounded mb-3" placeholder="Nick">
+                <input id="reg-email" class="w-full border p-3 rounded mb-3" placeholder="Email">
+                <input id="reg-pass" type="password" class="w-full border p-3 rounded mb-4" placeholder="Hasło (min 6 znaków)">
+                <button id="btn-reg" onclick="handleRegister()" class="w-full bg-black text-white font-bold p-3 rounded hover:bg-gray-800">ZAŁÓŻ KONTO</button>
             </div>
 
             <!-- USER PROFILE VIEW -->
-            <div id="user-view" class="hidden text-center">
-                <h2 class="font-bold text-xl mb-4">Twój Profil</h2>
-                <img id="user-avatar-main" class="w-24 h-24 rounded-full mx-auto mb-2 border bg-gray-100 object-cover">
+            <div id="user-profile-view" class="hidden text-center">
+                <h2 class="font-bold text-xl mb-4 border-b pb-2">TWÓJ PROFIL</h2>
+                <img id="user-avatar-main" class="w-24 h-24 rounded-full mx-auto mb-2 border bg-gray-100 object-cover shadow-lg">
                 <h3 id="user-display-name" class="font-bold text-lg">...</h3>
                 <p id="user-email-display" class="text-xs text-gray-400 mb-4">...</p>
-                
-                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-100 text-red-600 text-xs font-bold px-2 py-1 rounded border border-red-200">PANEL ADMINISTRATORA DOSTĘPNY</span></div>
+                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-100 text-red-600 text-xs font-bold px-2 py-1 rounded border border-red-200">SZEF</span></div>
 
-                <div class="text-left bg-gray-50 p-4 rounded-xl mb-4">
-                    <p class="text-xs font-bold text-gray-400 uppercase mb-2">Edytuj dane</p>
-                    <input id="edit-nick" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Twój Nick">
-                    <input id="edit-avatar" class="w-full border p-2 rounded mb-2 text-sm" placeholder="URL Avatara">
-                    <input type="file" onchange="handleFile(event)" class="text-xs mb-2">
-                    <input id="edit-pass" type="password" class="w-full border p-2 rounded mb-2 text-sm" placeholder="Nowe hasło (opcjonalne)">
-                    <button onclick="handleUpdateProfile()" class="w-full bg-gray-200 text-gray-800 font-bold p-2 rounded text-xs hover:bg-gray-300">ZAPISZ ZMIANY</button>
+                <div class="text-left bg-gray-50 p-4 rounded-xl mb-4 space-y-2">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase">EDYCJA DANYCH</p>
+                    <input id="edit-nick" class="w-full border p-2 rounded text-sm bg-white" placeholder="Nick">
+                    <input id="edit-avatar" class="w-full border p-2 rounded text-sm bg-white" placeholder="Link do avatara (URL)">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs text-gray-400">lub plik:</span>
+                        <input type="file" onchange="handleFile(event)" class="text-xs w-full">
+                    </div>
+                    <input id="edit-pass" type="password" class="w-full border p-2 rounded text-sm bg-white" placeholder="Nowe hasło (opcjonalnie)">
+                    <button onclick="saveProfileChanges()" class="w-full bg-gray-800 text-white font-bold p-2 rounded text-xs hover:bg-black mt-2">ZAPISZ ZMIANY</button>
                 </div>
 
-                <button onclick="window.cloudAPI.logout(); closeModal();" class="w-full border border-red-200 text-red-500 font-bold p-2 rounded hover:bg-red-50">WYLOGUJ</button>
+                <button onclick="window.cloudAPI.logout(); closeModal();" class="w-full border border-red-200 text-red-500 font-bold p-2 rounded hover:bg-red-50 text-sm">WYLOGUJ</button>
             </div>
         </div>
     </div>
@@ -649,9 +630,13 @@
     <!-- CART -->
     <div id="cart-modal" class="hidden fixed inset-0 z-50 flex justify-end">
         <div class="absolute inset-0 bg-black/50" onclick="toggleCart()"></div>
-        <div class="bg-white w-full max-w-md h-full relative p-6 shadow-2xl">
-            <h2 class="font-black text-2xl mb-6">KOSZYK</h2>
-            <p class="text-gray-400">Pusto...</p>
+        <div class="bg-white w-full max-w-md h-full relative p-6 shadow-2xl flex flex-col">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="font-black text-2xl">KOSZYK</h2>
+                <button onclick="toggleCart()"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            <div class="flex-1 flex items-center justify-center text-gray-400">Koszyk jest pusty</div>
+            <button class="w-full bg-purple-600 text-white font-bold p-4 rounded-xl mt-4">DO KASY</button>
         </div>
     </div>
 
