@@ -15,9 +15,11 @@
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- TWOJA KONFIGURACJA (ZE ZDJĘCIA) ---
-        const firebaseConfig = {
-            apiKey: "AIzaSyAAyQapOcICUgy_o6I18i7oWH4VG7M7LCA",
+        // --- LOGIKA KONFIGURACJI (Hardcoded + Auto-Repair) ---
+        
+        // 1. Domyślna konfiguracja (Ta z literówką)
+        let defaultConfig = {
+            apiKey: "AIzaSyAAyQapOcICUgy_o6I18i7oWH4VG7M7LCA", // Tu może być błąd I/l
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
             projectId: "ub-tworcy-adrion",
             storageBucket: "ub-tworcy-adrion.firebasestorage.app",
@@ -26,63 +28,87 @@
             measurementId: "G-G0FFKFHBC2"
         };
 
-        // DIAGNOSTYKA NA EKRANIE
-        function logErrorToScreen(title, desc) {
-            const box = document.getElementById('error-box');
-            const content = document.getElementById('error-content');
-            box.classList.remove('hidden');
-            content.innerHTML += `<p class="mb-2"><strong class="text-red-400">${title}</strong><br><span class="text-gray-300 text-sm">${desc}</span></p>`;
+        // 2. Sprawdź czy mamy naprawioną konfigurację w pamięci
+        const savedConfig = localStorage.getItem('hub_firebase_repair');
+        if (savedConfig) {
+            try {
+                defaultConfig = JSON.parse(savedConfig);
+                console.log("Używam naprawionej konfiguracji z pamięci.");
+            } catch(e) { console.error("Błąd odczytu naprawy", e); }
         }
 
-        let app, auth, db;
-        
+        // 3. Inicjalizacja
+        let app, auth, db, docRef;
+        let isConfigError = false;
+
         try {
-            app = initializeApp(firebaseConfig);
+            app = initializeApp(defaultConfig);
             auth = getAuth(app);
             db = getFirestore(app);
-            console.log("Firebase OK");
         } catch (e) {
-            logErrorToScreen("Błąd Inicjalizacji", e.message);
+            isConfigError = true;
+            showRepairModal("Błąd inicjalizacji: " + e.message);
         }
-        
-        let docRef; 
 
+        // --- FUNKCJA SYNCHRONIZACJI ---
         function initDataSync() {
-            // Ścieżka do danych
+            if(isConfigError) return;
+            
             docRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
             onSnapshot(docRef, (snapshot) => {
-                document.getElementById('error-box').classList.add('hidden'); // Ukryj błędy jak działa
-                const statusEl = document.getElementById('cloud-status-text');
-                if(statusEl) statusEl.innerText = "Online";
-                
+                document.getElementById('cloud-status-text').innerText = "Online";
                 if (snapshot.exists()) {
-                    const data = snapshot.data();
-                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
+                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: snapshot.data() }));
                 } else {
-                    // Próba utworzenia bazy (test zapisu)
-                    if(window.DEFAULT_DATA_TEMPLATE) {
-                        setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
-                        .then(() => console.log("Baza utworzona"))
-                        .catch(e => logErrorToScreen("Błąd Zapisu Bazy (Uprawnienia?)", "Wejdź w Firebase Console -> Firestore Database -> Rules i zmień 'false' na 'true'. <br>Treść błędu: " + e.message));
-                    }
+                    if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE);
                 }
             }, (error) => {
-                console.error("Błąd bazy:", error);
-                const statusEl = document.getElementById('cloud-status-text');
-                if(statusEl) { statusEl.innerText = "Błąd"; statusEl.style.color = "red"; }
-                
-                if (error.code === 'permission-denied') {
-                    logErrorToScreen("Brak Uprawnień (Permission Denied)", "Twoja baza jest zablokowana. <br>1. Wejdź w <b>Firestore Database -> Rules</b>.<br>2. Zmień <code>allow read, write: if false;</code> na <code>if true;</code>.<br>3. Kliknij Publish.");
-                } else if (error.code === 'auth/api-key-not-valid') {
-                    logErrorToScreen("Zły Klucz API", "Klucz API jest nieprawidłowy lub usunięty w konsoli Google Cloud.");
+                console.error("Firebase Error:", error);
+                // WYKRYWANIE BŁĘDU API KEY
+                if (error.code === 'auth/api-key-not-valid' || error.message.includes('api-key')) {
+                    showRepairModal("WYKRYTO BŁĘDNY KLUCZ API!<br>Prawdopodobnie literówka przy przepisywaniu.");
+                } else if (error.code === 'permission-denied') {
+                    window.showToast("Brak uprawnień (Zmień Rules w Firebase na true)", "error");
                 } else {
-                    logErrorToScreen("Błąd Połączenia", error.message + " (" + error.code + ")");
+                    document.getElementById('cloud-status-text').innerText = "Błąd";
+                    document.getElementById('cloud-status-text').style.color = "red";
                 }
             });
         }
 
-        initDataSync();
+        if(!isConfigError) initDataSync();
+
+        // --- SYSTEM NAPRAWY ---
+        window.saveRepairConfig = function() {
+            const input = document.getElementById('repair-input').value;
+            
+            // Magia: wyciąganie danych z wklejonego tekstu
+            try {
+                const newConfig = {};
+                const keys = ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId'];
+                
+                keys.forEach(key => {
+                    const regex = new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`);
+                    const match = input.match(regex);
+                    if(match) newConfig[key] = match[1];
+                });
+
+                if(!newConfig.apiKey) throw new Error("Nie znalazłem apiKey w tekście.");
+
+                localStorage.setItem('hub_firebase_repair', JSON.stringify(newConfig));
+                alert("Konfiguracja zapisana! Strona zostanie odświeżona.");
+                location.reload();
+            } catch(e) {
+                alert("Nie udało się odczytać danych. Upewnij się, że wklejasz cały fragment 'const firebaseConfig = { ... }' z Firebase Console.");
+            }
+        }
+        
+        function showRepairModal(msg) {
+            const modal = document.getElementById('repair-modal');
+            document.getElementById('repair-reason').innerHTML = msg;
+            modal.classList.remove('hidden');
+        }
 
         // Eksport API
         window.cloudAPI = {
@@ -90,10 +116,16 @@
             save: async (newData) => {
                 if (!docRef) return;
                 window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
-                try { await setDoc(docRef, newData, { merge: true }); } 
-                catch (e) { console.error("Save error", e); window.showToast("Błąd zapisu!", "error"); }
+                try { await setDoc(docRef, newData, { merge: true }); } catch (e) {}
             },
-            login: async (email, pass) => signInWithEmailAndPassword(auth, email, pass),
+            login: async (email, pass) => {
+                try {
+                    await signInWithEmailAndPassword(auth, email, pass);
+                } catch(e) {
+                    if(e.code === 'auth/api-key-not-valid') showRepairModal("Błędny klucz API przy logowaniu!");
+                    throw e;
+                }
+            },
             register: async (email, pass) => createUserWithEmailAndPassword(auth, email, pass),
             logout: async () => signOut(auth),
             onAuth: (cb) => onAuthStateChanged(auth, cb)
@@ -142,17 +174,22 @@
 </head>
 <body class="antialiased min-h-screen flex flex-col relative">
 
-    <!-- DIAGNOSTIC BOX -->
-    <div id="error-box" class="fixed inset-0 z-[9999] bg-black/90 flex items-center justify-center hidden p-4">
-        <div class="bg-gray-900 border-2 border-red-500 rounded-xl p-6 max-w-lg w-full text-white shadow-2xl">
-            <div class="flex items-center gap-3 mb-4 text-red-400">
-                <i class="fas fa-bug text-3xl"></i>
-                <h2 class="text-xl font-bold">Diagnostyka Błędu</h2>
+    <!-- REPAIR MODAL (Pojawia się tylko przy błędzie klucza) -->
+    <div id="repair-modal" class="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center hidden p-4">
+        <div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl text-center">
+            <div class="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">
+                <i class="fas fa-bug"></i>
             </div>
-            <div id="error-content" class="bg-black/50 p-4 rounded border border-white/10 text-sm font-mono mb-4 max-h-60 overflow-y-auto">
-                <!-- Tu pojawią się błędy -->
-            </div>
-            <button onclick="location.reload()" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded transition-colors">Odśwież stronę</button>
+            <h2 class="text-2xl font-bold text-gray-900 mb-2">Błąd Konfiguracji Firebase</h2>
+            <p id="repair-reason" class="text-red-500 font-bold text-sm mb-4"></p>
+            <p class="text-gray-600 text-sm mb-4">
+                Kod strony ma literówkę w kluczu API. Naprawmy to automatycznie.<br>
+                1. Wejdź w <b>Firebase Console</b> -> Project Settings.<br>
+                2. Skopiuj cały fragment <code>const firebaseConfig = { ... };</code><br>
+                3. Wklej go poniżej:
+            </p>
+            <textarea id="repair-input" class="w-full h-32 bg-gray-100 border border-gray-300 rounded-lg p-3 text-xs font-mono mb-4 focus:border-brand-purple outline-none" placeholder='Wklej tutaj: const firebaseConfig = { ... }'></textarea>
+            <button onclick="saveRepairConfig()" class="w-full bg-brand-purple text-white font-bold py-3 rounded-xl hover:bg-brand-pink transition-all shadow-lg">NAPRAW I URUCHOM</button>
         </div>
     </div>
 
@@ -349,7 +386,7 @@
                 <input id="login-email" type="email" placeholder="Email" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-3 text-black outline-none focus:ring-2 focus:ring-brand-purple/20">
                 <input id="login-password" type="password" placeholder="Hasło" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-4 text-black outline-none focus:ring-2 focus:ring-brand-purple/20">
                 <button onclick="handleLogin()" id="btn-login-action" class="w-full bg-brand-purple text-white font-bold py-4 rounded-xl hover:bg-brand-pink transition-colors shadow-lg">ZALOGUJ SIĘ</button>
-                <p class="text-xs text-gray-400 mt-4 text-center">Admin: admin@hub.pl / admin123 (jeśli ustawione)</p>
+                <p class="text-xs text-gray-400 mt-4 text-center">Admin: admin@hub.pl (zarejestruj się by aktywować)</p>
             </div>
             
             <div id="form-register" class="hidden">
@@ -393,7 +430,6 @@
         </div>
     </div>
 
-    <!-- JAVASCRIPT -->
     <script>
         // DOMYŚLNE DANE (Template)
         window.DEFAULT_DATA_TEMPLATE = {
@@ -406,7 +442,7 @@
                 links: { instagram: "https://www.instagram.com/___adrion___/" }
             },
             posts: [
-                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zarejestruj się jako admin@hub.pl aby przejąć kontrolę.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
+                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zaloguj się jako admin@hub.pl aby przejąć kontrolę.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
             ],
             products: [],
             userRoles: {
