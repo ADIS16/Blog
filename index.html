@@ -15,7 +15,7 @@
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- TWOJA KONFIGURACJA (Na sztywno - to musi działać) ---
+        // --- TWOJA KONFIGURACJA (ZE ZDJĘCIA) ---
         const firebaseConfig = {
             apiKey: "AIzaSyAAyQapOcICUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
@@ -26,26 +26,33 @@
             measurementId: "G-G0FFKFHBC2"
         };
 
-        // Inicjalizacja - PROSTA I BEZPOŚREDNIA
+        // DIAGNOSTYKA NA EKRANIE
+        function logErrorToScreen(title, desc) {
+            const box = document.getElementById('error-box');
+            const content = document.getElementById('error-content');
+            box.classList.remove('hidden');
+            content.innerHTML += `<p class="mb-2"><strong class="text-red-400">${title}</strong><br><span class="text-gray-300 text-sm">${desc}</span></p>`;
+        }
+
         let app, auth, db;
         
         try {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
-            console.log("Firebase połączony poprawnie.");
+            console.log("Firebase OK");
         } catch (e) {
-            console.error("Błąd inicjalizacji Firebase:", e);
-            alert("Krytyczny błąd połączenia z bazą danych.");
+            logErrorToScreen("Błąd Inicjalizacji", e.message);
         }
         
         let docRef; 
 
         function initDataSync() {
-            // Bezpieczna ścieżka do danych
+            // Ścieżka do danych
             docRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
             onSnapshot(docRef, (snapshot) => {
+                document.getElementById('error-box').classList.add('hidden'); // Ukryj błędy jak działa
                 const statusEl = document.getElementById('cloud-status-text');
                 if(statusEl) statusEl.innerText = "Online";
                 
@@ -53,35 +60,38 @@
                     const data = snapshot.data();
                     window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
                 } else {
-                    // Jeśli to pierwsze uruchomienie na nowym serwerze - stwórz dane
+                    // Próba utworzenia bazy (test zapisu)
                     if(window.DEFAULT_DATA_TEMPLATE) {
-                        setDoc(docRef, window.DEFAULT_DATA_TEMPLATE).catch(e => console.warn("Tworzenie bazy:", e));
+                        setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
+                        .then(() => console.log("Baza utworzona"))
+                        .catch(e => logErrorToScreen("Błąd Zapisu Bazy (Uprawnienia?)", "Wejdź w Firebase Console -> Firestore Database -> Rules i zmień 'false' na 'true'. <br>Treść błędu: " + e.message));
                     }
                 }
             }, (error) => {
-                console.error("Błąd odczytu:", error);
+                console.error("Błąd bazy:", error);
                 const statusEl = document.getElementById('cloud-status-text');
-                if(statusEl) { statusEl.innerText = "Błąd Połączenia"; statusEl.style.color = "red"; }
+                if(statusEl) { statusEl.innerText = "Błąd"; statusEl.style.color = "red"; }
                 
-                // Jeśli błąd API Key nadal występuje, wyświetl go
-                if (error.code === 'auth/api-key-not-valid') {
-                     window.showToast("BŁĄD KLUCZA API: Sprawdź ustawienia w Firebase Console > Project Settings", "error");
+                if (error.code === 'permission-denied') {
+                    logErrorToScreen("Brak Uprawnień (Permission Denied)", "Twoja baza jest zablokowana. <br>1. Wejdź w <b>Firestore Database -> Rules</b>.<br>2. Zmień <code>allow read, write: if false;</code> na <code>if true;</code>.<br>3. Kliknij Publish.");
+                } else if (error.code === 'auth/api-key-not-valid') {
+                    logErrorToScreen("Zły Klucz API", "Klucz API jest nieprawidłowy lub usunięty w konsoli Google Cloud.");
+                } else {
+                    logErrorToScreen("Błąd Połączenia", error.message + " (" + error.code + ")");
                 }
             });
         }
 
-        // Uruchom synchronizację
         initDataSync();
 
-        // Eksport API dla reszty skryptu
+        // Eksport API
         window.cloudAPI = {
             auth: auth,
             save: async (newData) => {
                 if (!docRef) return;
-                // Szybki update lokalny (optymistyczny)
                 window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
                 try { await setDoc(docRef, newData, { merge: true }); } 
-                catch (e) { console.error("Save error", e); window.showToast("Błąd zapisu! (Może brak uprawnień?)", "error"); }
+                catch (e) { console.error("Save error", e); window.showToast("Błąd zapisu!", "error"); }
             },
             login: async (email, pass) => signInWithEmailAndPassword(auth, email, pass),
             register: async (email, pass) => createUserWithEmailAndPassword(auth, email, pass),
@@ -131,6 +141,20 @@
     </style>
 </head>
 <body class="antialiased min-h-screen flex flex-col relative">
+
+    <!-- DIAGNOSTIC BOX -->
+    <div id="error-box" class="fixed inset-0 z-[9999] bg-black/90 flex items-center justify-center hidden p-4">
+        <div class="bg-gray-900 border-2 border-red-500 rounded-xl p-6 max-w-lg w-full text-white shadow-2xl">
+            <div class="flex items-center gap-3 mb-4 text-red-400">
+                <i class="fas fa-bug text-3xl"></i>
+                <h2 class="text-xl font-bold">Diagnostyka Błędu</h2>
+            </div>
+            <div id="error-content" class="bg-black/50 p-4 rounded border border-white/10 text-sm font-mono mb-4 max-h-60 overflow-y-auto">
+                <!-- Tu pojawią się błędy -->
+            </div>
+            <button onclick="location.reload()" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded transition-colors">Odśwież stronę</button>
+        </div>
+    </div>
 
     <div id="cloud-status"><span class="pulse-green"></span> <span id="cloud-status-text">Łączenie...</span></div>
     <div id="toast-container"></div>
@@ -205,7 +229,7 @@
         <!-- SHOP -->
         <div id="view-shop" class="hidden section-fade">
             <div class="text-center mb-12">
-                <span class="text-brand-purple font-bold tracking-widest text-xs uppercase bg-brand-purple/10 px-3 py-1 rounded-full">Official Store</span>
+                <span class="text-brand-purple font-bold tracking-widest text-xs uppercase bg-brand-purple/10 px-3 py-1 rounded-full border border-brand-purple/20">Official Store</span>
                 <h2 class="font-display text-4xl md:text-6xl font-bold mt-4 text-black">LIMITED <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-purple to-brand-pink">DROP</span></h2>
             </div>
             <div class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-8" id="products-container"></div>
@@ -382,7 +406,7 @@
                 links: { instagram: "https://www.instagram.com/___adrion___/" }
             },
             posts: [
-                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zaloguj się jako admin@hub.pl aby przejąć kontrolę.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
+                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zarejestruj się jako admin@hub.pl aby przejąć kontrolę.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
             ],
             products: [],
             userRoles: {
