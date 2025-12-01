@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="pl" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hub Twórcy - Official World</title>
+    
+    <!-- Optymalizacja ładowania zasobów -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://cdn.tailwindcss.com">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all'">
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+    <!-- FIREBASE SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- KONFIGURACJA ---
+        const myRealFirebaseConfig = {
+            apiKey: "AIzaSyAAyQapOcICUgy_o6I18i7oWH4VG7M7LCA",
+            authDomain: "ub-tworcy-adrion.firebaseapp.com",
+            projectId: "ub-tworcy-adrion",
+            storageBucket: "ub-tworcy-adrion.firebasestorage.app",
+            messagingSenderId: "726610553428",
+            appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1",
+            measurementId: "G-G0FFKFHBC2"
+        };
+
+        let firebaseConfig;
+        let appId;
+
+        try {
+            if (myRealFirebaseConfig) {
+                firebaseConfig = myRealFirebaseConfig;
+                appId = myRealFirebaseConfig.projectId;
+            } else {
+                firebaseConfig = JSON.parse(__firebase_config);
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            }
+        } catch (e) {
+            console.error("Firebase config error");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        let docRef; 
+
+        function initDataSync() {
+            docRef = doc(db, 'projects', appId, 'public_data', 'hub_content');
+
+            // Nasłuchiwanie (Live)
+            onSnapshot(docRef, (snapshot) => {
+                const statusEl = document.getElementById('cloud-status-text');
+                if(statusEl) statusEl.innerText = "Zsynchronizowano";
+                
+                if (snapshot.exists()) {
+                    const data = snapshot.data();
+                    // Wyślij event do aplikacji
+                    window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: data }));
+                } else {
+                    // Jeśli baza pusta, wyślij template
+                    if(window.DEFAULT_DATA_TEMPLATE) {
+                        setDoc(docRef, window.DEFAULT_DATA_TEMPLATE);
+                    }
+                }
+            }, (error) => {
+                console.error("Błąd bazy:", error);
+                const statusEl = document.getElementById('cloud-status-text');
+                if(statusEl) { statusEl.innerText = "Offline"; statusEl.style.color = "red"; }
+            });
+        }
+
+        initDataSync();
+
+        window.cloudAPI = {
+            auth: auth,
+            save: async (newData) => {
+                if (!docRef) return;
+                // Optymistyczna aktualizacja lokalna
+                window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
+                try { await setDoc(docRef, newData, { merge: true }); } 
+                catch (e) { console.error("Save error", e); window.showToast("Błąd zapisu!", "error"); }
+            },
+            login: async (email, pass) => signInWithEmailAndPassword(auth, email, pass),
+            register: async (email, pass) => createUserWithEmailAndPassword(auth, email, pass),
+            logout: async () => signOut(auth),
+            onAuth: (cb) => onAuthStateChanged(auth, cb)
+        };
+    </script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'], display: ['Syne', 'sans-serif'] },
+                    colors: { 
+                        'brand-purple': '#8b5cf6', 'brand-pink': '#ec4899', 
+                        'dark-bg': '#050505', 'card-bg': '#121212', 'text-main': '#ffffff'
+                    },
+                    boxShadow: { 'glow': '0 0 20px rgba(139, 92, 246, 0.15)' }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body { background-color: #050505; color: #ffffff; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .story-ring { background: linear-gradient(45deg, #8b5cf6, #ec4899); padding: 3px; border-radius: 50%; }
+        .section-fade { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .masonry-grid { column-count: 1; gap: 1.5rem; }
+        @media (min-width: 768px) { .masonry-grid { column-count: 2; } }
+        @media (min-width: 1024px) { .masonry-grid { column-count: 3; } }
+        .masonry-item { break-inside: avoid; margin-bottom: 1.5rem; }
+        
+        #cloud-status { position: fixed; bottom: 10px; left: 10px; font-size: 10px; opacity: 0.7; z-index: 1000; color: #4ade80; display: flex; align-items: center; gap: 5px; }
+        .pulse-green { width: 6px; height: 6px; background: currentColor; border-radius: 50%; animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+        .toast { background: #1a1a1a; color: white; padding: 12px 24px; border-radius: 12px; border-left: 4px solid #8b5cf6; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-size: 14px; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        
+        .spinner { border: 2px solid rgba(255,255,255,0.1); border-top: 2px solid #fff; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.6s linear infinite; display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="antialiased min-h-screen flex flex-col relative">
+
+    <div id="cloud-status"><span class="pulse-green"></span> <span id="cloud-status-text">Łączenie...</span></div>
+    <div id="toast-container"></div>
+
+    <!-- ADMIN BAR -->
+    <div id="admin-bar" class="hidden bg-gradient-to-r from-brand-purple to-brand-pink text-white text-xs font-bold text-center py-2 uppercase tracking-widest relative z-[60] shadow-glow flex justify-center items-center gap-4">
+        <span><i class="fas fa-lock mr-2"></i>Panel Administratora</span>
+    </div>
+
+    <!-- NAVIGATION -->
+    <nav class="fixed bottom-0 md:top-0 md:bottom-auto w-full z-50 bg-black/80 backdrop-blur-md border-t md:border-b md:border-t-0 border-white/10 h-16 md:h-20 shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
+            <div class="hidden md:block font-display text-2xl font-bold tracking-tighter cursor-pointer hover:text-brand-purple transition-colors text-white" id="nav-logo" onclick="switchTab('feed')"></div>
+
+            <div class="flex w-full md:w-auto justify-around md:justify-center md:space-x-8 items-center h-full">
+                <button onclick="switchTab('feed')" class="nav-btn active text-brand-purple flex flex-col md:flex-row items-center gap-1 md:gap-2 transition-transform hover:scale-105">
+                    <i class="fas fa-home text-xl"></i> <span class="text-xs md:text-sm font-bold">VLOG</span>
+                </button>
+                <button onclick="switchTab('shop')" class="nav-btn text-gray-400 hover:text-white flex flex-col md:flex-row items-center gap-1 md:gap-2 transition-transform hover:scale-105">
+                    <i class="fas fa-shopping-bag text-xl"></i> <span class="text-xs md:text-sm font-bold">SKLEP</span>
+                </button>
+                <button id="nav-admin-btn" onclick="switchTab('admin')" class="hidden nav-btn text-red-500 hover:text-red-400 flex flex-col md:flex-row items-center gap-1 md:gap-2 transition-transform hover:scale-105">
+                    <i class="fas fa-cogs text-xl"></i> <span class="text-xs md:text-sm font-bold">ZARZĄDZAJ</span>
+                </button>
+            </div>
+
+            <div class="hidden md:flex items-center gap-4 text-white">
+                <div id="user-menu-desktop" class="cursor-pointer hover:text-brand-purple transition-colors" onclick="handleAuthClick()">
+                    <i class="far fa-user-circle text-2xl"></i>
+                </div>
+                <div class="relative cursor-pointer hover:scale-110 transition-transform" onclick="toggleCart()">
+                    <i class="fas fa-shopping-cart text-xl"></i>
+                    <span id="cart-badge" class="absolute -top-2 -right-2 bg-brand-pink text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center scale-0 transition-transform shadow-glow">0</span>
+                </div>
+            </div>
+            
+            <div class="md:hidden absolute top-[-60px] right-4 flex gap-3">
+                 <div class="bg-card-bg p-3 rounded-full shadow-lg border border-white/10 text-white" onclick="handleAuthClick()">
+                    <i class="fas fa-user"></i>
+                </div>
+                <div class="bg-brand-purple p-3 rounded-full shadow-lg border border-white/20 relative text-white" onclick="toggleCart()">
+                    <i class="fas fa-shopping-cart"></i>
+                    <span id="cart-badge-mobile" class="absolute -top-1 -right-1 bg-brand-pink text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center scale-0 transition-transform">0</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- CONTENT -->
+    <main class="flex-grow pt-4 pb-20 md:pt-24 md:pb-12 px-4 max-w-7xl mx-auto w-full">
+
+        <!-- VIEW: FEED -->
+        <div id="view-feed" class="section-fade">
+            <div class="flex flex-col md:flex-row items-center md:items-start gap-6 mb-12 border-b border-white/10 pb-8">
+                <div class="story-ring p-1"><img id="profile-avatar" src="" class="w-24 h-24 md:w-32 md:h-32 rounded-full object-cover border-4 border-black shadow-2xl"></div>
+                <div class="text-center md:text-left flex-1">
+                    <h1 class="font-display text-3xl md:text-5xl font-bold mb-2 text-white" id="profile-name">...</h1>
+                    <p class="text-gray-400 max-w-lg mb-4 font-medium" id="profile-bio">...</p>
+                    <div class="flex justify-center md:justify-start gap-4 text-2xl text-gray-400" id="social-icons"></div>
+                </div>
+                <div class="flex gap-8 text-center bg-card-bg p-6 rounded-2xl border border-white/5 shadow-card backdrop-blur-sm">
+                    <div><div class="font-display text-2xl font-bold text-white" id="stat-yt">-</div><div class="text-xs text-gray-500 uppercase font-bold tracking-wider">YouTube</div></div>
+                    <div><div class="font-display text-2xl font-bold text-white" id="stat-ig">-</div><div class="text-xs text-gray-500 uppercase font-bold tracking-wider">Instagram</div></div>
+                    <div><div class="font-display text-2xl font-bold text-white" id="stat-projects">-</div><div class="text-xs text-gray-500 uppercase font-bold tracking-wider">Projekty</div></div>
+                </div>
+            </div>
+            <div class="masonry-grid" id="blog-container">
+                <!-- Skeleton Loader (To widać zamiast czarnego ekranu) -->
+                <div class="bg-card-bg h-64 rounded-2xl animate-pulse"></div>
+                <div class="bg-card-bg h-48 rounded-2xl animate-pulse"></div>
+                <div class="bg-card-bg h-80 rounded-2xl animate-pulse"></div>
+            </div>
+        </div>
+
+        <!-- VIEW: SHOP -->
+        <div id="view-shop" class="hidden section-fade">
+            <div class="text-center mb-12">
+                <span class="text-brand-purple font-bold tracking-widest text-xs uppercase bg-brand-purple/10 px-3 py-1 rounded-full border border-brand-purple/20">Official Store</span>
+                <h2 class="font-display text-4xl md:text-6xl font-bold mt-4 text-white">LIMITED <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-purple to-brand-pink">DROP</span></h2>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-8" id="products-container"></div>
+        </div>
+
+        <!-- VIEW: ABOUT -->
+        <div id="view-about" class="hidden section-fade">
+             <div class="max-w-2xl mx-auto bg-card-bg rounded-3xl p-10 border border-white/5 shadow-glow">
+                <h2 class="font-display text-3xl font-bold mb-6 text-white">O Mnie</h2>
+                <div class="flex flex-col md:flex-row gap-8 mb-6">
+                    <img id="about-avatar" src="" class="w-full md:w-1/3 rounded-2xl object-cover aspect-square shadow-lg border border-white/10">
+                    <div class="flex-1">
+                        <p class="text-gray-300 mb-6 leading-relaxed text-lg" id="about-text">...</p>
+                        <a id="contact-btn-about" href="#" class="inline-block bg-white text-black px-8 py-3 rounded-xl font-bold hover:bg-brand-purple hover:text-white transition-all">Napisz do mnie</a>
+                    </div>
+                </div>
+             </div>
+        </div>
+
+        <!-- VIEW: ADMIN -->
+        <div id="view-admin" class="hidden section-fade">
+            <div class="bg-card-bg p-8 rounded-3xl border border-white/10 shadow-glow">
+                <div class="flex flex-col md:flex-row items-center justify-between mb-8 gap-4">
+                    <h2 class="font-display text-3xl md:text-4xl font-bold text-white"><i class="fas fa-terminal text-brand-purple mr-3"></i>Dashboard</h2>
+                    <div class="flex gap-2">
+                        <button onclick="adminResetToDefaults()" class="bg-red-900/20 text-red-500 border border-red-500/30 px-4 py-2 rounded-lg text-xs font-bold hover:bg-red-600 hover:text-white transition-all"><i class="fas fa-trash-alt mr-1"></i> RESET BAZY</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- Column 1 -->
+                    <div class="space-y-8">
+                        <div class="bg-black/30 p-6 rounded-2xl border border-white/5">
+                            <h3 class="text-lg font-bold mb-4 text-gray-300">Edytuj Profil</h3>
+                            <div class="grid grid-cols-3 gap-3">
+                                <input id="admin-stat-ig" type="text" class="w-full bg-black border border-white/10 p-2 rounded text-white text-sm focus:border-brand-purple outline-none" placeholder="IG">
+                                <input id="admin-stat-yt" type="text" class="w-full bg-black border border-white/10 p-2 rounded text-white text-sm focus:border-brand-purple outline-none" placeholder="YT">
+                                <input id="admin-stat-proj" type="text" class="w-full bg-black border border-white/10 p-2 rounded text-white text-sm focus:border-brand-purple outline-none" placeholder="PROJ">
+                            </div>
+                            <button onclick="adminUpdateStats()" class="w-full mt-4 bg-white/5 hover:bg-brand-purple hover:text-white text-brand-purple font-bold py-2 rounded text-sm transition-colors border border-brand-purple/20 shadow-sm btn-save">Zapisz</button>
+                        </div>
+
+                        <div class="bg-black/30 p-6 rounded-2xl border border-white/5">
+                            <h3 class="text-lg font-bold mb-4 text-gray-300">Dodaj Post</h3>
+                            <div class="space-y-3">
+                                <input id="admin-post-title" type="text" placeholder="Tytuł posta" class="w-full bg-black border border-white/10 p-3 rounded-lg text-white focus:border-brand-purple outline-none">
+                                <textarea id="admin-post-text" placeholder="Treść..." class="w-full bg-black border border-white/10 p-3 rounded-lg text-white h-20 focus:border-brand-purple outline-none"></textarea>
+                                <div class="flex gap-2">
+                                    <select id="admin-post-type" class="bg-black border border-white/10 p-3 rounded-lg text-white text-sm w-1/3 outline-none">
+                                        <option value="status">Status</option>
+                                        <option value="photo">Zdjęcie</option>
+                                        <option value="video">Wideo</option>
+                                    </select>
+                                    <div class="relative w-2/3">
+                                        <input type="file" id="admin-post-file" accept="image/*" class="hidden" onchange="handleFileSelect(event)">
+                                        <label for="admin-post-file" id="file-label" class="flex items-center justify-center w-full h-full bg-black border border-white/10 p-3 rounded-lg text-gray-400 text-sm cursor-pointer hover:bg-white/10 truncate shadow-sm transition-colors">
+                                            <i class="fas fa-camera mr-2"></i> Wybierz plik...
+                                        </label>
+                                    </div>
+                                </div>
+                                <input id="admin-post-video" type="text" placeholder="Link do YouTube (dla Wideo)" class="w-full bg-black border border-white/10 p-3 rounded-lg text-white text-sm focus:border-brand-purple outline-none">
+                                <button onclick="adminAddPost()" id="btn-post" class="w-full bg-brand-purple hover:bg-brand-pink text-white font-bold py-3 rounded-lg transition-colors shadow-glow">PUBLIKUJ</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Column 2 -->
+                    <div class="space-y-8">
+                        <div class="bg-black/30 p-6 rounded-2xl border border-white/5">
+                            <h3 class="text-lg font-bold mb-4 text-gray-300">Sklep</h3>
+                            <div class="space-y-3">
+                                <input id="admin-prod-name" type="text" placeholder="Nazwa produktu" class="w-full bg-black border border-white/10 p-3 rounded-lg text-white focus:border-brand-purple outline-none">
+                                <div class="grid grid-cols-2 gap-3">
+                                    <input id="admin-prod-price" type="number" placeholder="Cena" class="bg-black border border-white/10 p-3 rounded-lg text-white focus:border-brand-purple outline-none">
+                                    <input id="admin-prod-label" type="text" placeholder="Etykieta" class="bg-black border border-white/10 p-3 rounded-lg text-white focus:border-brand-purple outline-none">
+                                </div>
+                                <div class="relative">
+                                    <input type="file" id="admin-prod-file" accept="image/*" class="hidden" onchange="handleProductFileSelect(event)">
+                                    <label for="admin-prod-file" id="prod-file-label" class="flex items-center justify-center w-full bg-black border border-white/10 p-3 rounded-lg text-gray-400 text-sm cursor-pointer hover:bg-white/10 shadow-sm transition-colors">
+                                        <i class="fas fa-camera mr-2"></i> Zdjęcie produktu...
+                                    </label>
+                                </div>
+                                <button onclick="adminAddProduct()" id="btn-prod" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-lg transition-colors mt-2 shadow-[0_0_15px_rgba(34,197,94,0.3)]">DODAJ PRODUKT</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- User Management -->
+                <div class="mt-8 bg-black/30 p-6 rounded-2xl border border-white/5">
+                    <div class="flex justify-between items-center mb-4 border-b border-white/10 pb-4">
+                        <h3 class="text-lg font-bold text-gray-300"><i class="fas fa-users mr-2"></i>Użytkownicy (<span id="admin-user-count" class="text-brand-purple">0</span>)</h3>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm text-gray-400">
+                            <thead class="bg-black/50 text-gray-500 uppercase text-xs">
+                                <tr>
+                                    <th class="p-3 rounded-l-lg">Nick</th>
+                                    <th class="p-3">Rola</th>
+                                    <th class="p-3 text-right rounded-r-lg">Akcje</th>
+                                </tr>
+                            </thead>
+                            <tbody id="admin-users-list" class="divide-y divide-white/5"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <!-- AUTH MODAL -->
+    <div id="auth-modal" class="fixed inset-0 z-[100] bg-black/90 hidden flex items-center justify-center backdrop-blur-sm px-4">
+        <div class="bg-card-bg p-8 rounded-3xl shadow-2xl w-full max-w-sm relative border border-white/10">
+            <button onclick="closeAuthModal()" class="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"><i class="fas fa-times text-xl"></i></button>
+            <div class="flex border-b border-white/10 mb-6">
+                <button onclick="switchAuthTab('login')" id="tab-login" class="flex-1 pb-3 text-brand-purple border-b-2 border-brand-purple font-bold">Logowanie</button>
+                <button onclick="switchAuthTab('register')" id="tab-register" class="flex-1 pb-3 text-gray-500 hover:text-white">Rejestracja</button>
+            </div>
+            
+            <div id="form-login">
+                <input id="login-email" type="email" placeholder="Email" class="w-full bg-black border border-white/10 p-4 rounded-xl mb-3 text-white focus:border-brand-purple outline-none focus:ring-2 focus:ring-brand-purple/20 transition-all">
+                <input id="login-password" type="password" placeholder="Hasło" class="w-full bg-black border border-white/10 p-4 rounded-xl mb-4 text-white focus:border-brand-purple outline-none focus:ring-2 focus:ring-brand-purple/20 transition-all">
+                <button onclick="handleLogin()" id="btn-login-action" class="w-full bg-brand-purple text-white font-bold py-4 rounded-xl hover:bg-brand-pink transition-colors shadow-glow">ZALOGUJ SIĘ</button>
+                <p class="text-xs text-gray-600 mt-4 text-center">Do trybu Admina użyj: admin@hub.pl / admin123</p>
+            </div>
+            
+            <div id="form-register" class="hidden">
+                <input id="reg-nick" type="text" placeholder="Nick" class="w-full bg-black border border-white/10 p-4 rounded-xl mb-3 text-white focus:border-brand-purple outline-none focus:ring-2 focus:ring-brand-purple/20 transition-all">
+                <input id="reg-email" type="email" placeholder="Email" class="w-full bg-black border border-white/10 p-4 rounded-xl mb-3 text-white focus:border-brand-purple outline-none focus:ring-2 focus:ring-brand-purple/20 transition-all">
+                <input id="reg-password" type="password" placeholder="Hasło (min. 6 znaków)" class="w-full bg-black border border-white/10 p-4 rounded-xl mb-4 text-white focus:border-brand-purple outline-none focus:ring-2 focus:ring-brand-purple/20 transition-all">
+                <button onclick="handleRegister()" id="btn-reg-action" class="w-full bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors shadow-lg">ZAŁÓŻ KONTO</button>
+            </div>
+            
+            <div id="user-profile-view" class="hidden text-center">
+                <div class="w-24 h-24 bg-gradient-to-br from-brand-purple to-brand-pink rounded-full flex items-center justify-center mx-auto mb-4 text-4xl font-bold text-white shadow-glow"><span id="user-initial">U</span></div>
+                <h3 id="user-display-name" class="text-2xl font-bold mb-1 text-white">User</h3>
+                <p id="user-email-display" class="text-gray-500 text-sm mb-8"></p>
+                <button onclick="handleLogout()" class="w-full border border-red-900/50 text-red-500 font-bold py-3 rounded-xl hover:bg-red-900/20 transition-colors">WYLOGUJ</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CART MODAL -->
+    <div id="cart-modal" class="fixed inset-0 z-[100] bg-black/80 hidden backdrop-blur-sm">
+        <div class="absolute inset-0" onclick="toggleCart()"></div>
+        <div id="cart-content" class="absolute right-0 top-0 h-full w-full max-w-md bg-card-bg shadow-2xl flex flex-col transform transition-transform duration-300 translate-x-full border-l border-white/10">
+            <div class="flex items-center justify-between p-6 border-b border-white/10">
+                <h2 class="font-display text-2xl font-bold text-white">KOSZYK</h2>
+                <button onclick="toggleCart()" class="text-2xl text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="cart-items" class="flex-1 overflow-y-auto p-6 space-y-4"></div>
+            <div class="p-6 border-t border-white/10 bg-black/30">
+                <div class="flex justify-between items-center mb-4 text-xl font-bold text-white"><span>Suma:</span><span id="cart-total" class="text-brand-purple">0.00 PLN</span></div>
+                <button class="w-full bg-brand-purple text-white font-bold py-4 rounded-xl hover:bg-brand-pink transition-colors shadow-glow">PRZEJDŹ DO PŁATNOŚCI</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- VIDEO MODAL -->
+    <div id="video-modal" class="fixed inset-0 z-[110] bg-black/95 hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0" onclick="closeVideo()"></div>
+        <div class="relative w-full max-w-4xl aspect-video bg-black rounded-xl overflow-hidden shadow-2xl border border-white/20">
+            <button onclick="closeVideo()" class="absolute top-4 right-4 z-20 bg-black/50 hover:bg-brand-purple text-white w-10 h-10 rounded-full flex items-center justify-center transition-colors"><i class="fas fa-times"></i></button>
+            <iframe id="video-frame" class="w-full h-full" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT -->
+    <script>
+        const CACHE_KEY = 'hub_data_cache';
+        
+        // DOMYŚLNE DANE - Tylko jeśli brak cache i bazy
+        window.DEFAULT_DATA_TEMPLATE = {
+            config: {
+                firstName: "ADRION", lastName: "___",   
+                bio: "Lifestyle, moda i codzienne vlogi.",
+                avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=1964&auto=format&fit=crop",
+                email: "kontakt@twojadomena.pl",
+                stats: { youtube: "10K", instagram: "14.5K", projects: "5" },
+                links: { instagram: "https://www.instagram.com/___adrion___/" }
+            },
+            posts: [
+                { id: 101, type: 'status', title: 'Witamy na stronie!', text: 'Wszystko działa. Zaloguj się jako admin@hub.pl / admin123 aby edytować.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
+            ],
+            products: [],
+            userRoles: {
+                'admin@hub.pl': { role: 'admin', nick: 'Szef' }
+            }
+        };
+
+        // 1. WCZYTAJ CACHE NATYCHMIAST
+        let APP_DATA;
+        try {
+            const cached = localStorage.getItem(CACHE_KEY);
+            APP_DATA = cached ? JSON.parse(cached) : JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+        } catch(e) {
+            APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+        }
+
+        let currentUser = null; 
+        let currentUserRole = 'guest';
+        let currentPostImageBase64 = '';
+        let currentProductImageBase64 = '';
+        let cart = []; 
+
+        // Funkcja do aktualizacji cache i UI
+        function updateAppData(newData) {
+            APP_DATA = newData;
+            // Zabezpieczenia struktury
+            if (!APP_DATA.posts) APP_DATA.posts = [];
+            if (!APP_DATA.products) APP_DATA.products = [];
+            if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
+            
+            // Zapis do cache
+            localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
+            
+            // Render
+            checkUserRole();
+            renderAll();
+        }
+
+        window.addEventListener('cloudDataUpdated', (e) => {
+            if (e.detail) {
+                // Update UI status
+                const status = document.getElementById('cloud-status-text');
+                if(status) status.innerText = "Online";
+                updateAppData(e.detail);
+            }
+        });
+
+        if (window.cloudAPI) {
+            window.cloudAPI.onAuth((user) => {
+                currentUser = user;
+                checkUserRole();
+                updateAuthUI();
+            });
+        }
+
+        // --- HELPERY (Toast, Spinner) ---
+        function showToast(msg, type='success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `<i class="${type === 'success' ? 'fas fa-check-circle text-green-400' : 'fas fa-exclamation-circle text-red-400'}"></i> ${msg}`;
+            container.appendChild(toast);
+            setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
+        }
+
+        function setLoading(btnId, isLoading) {
+            const btn = document.getElementById(btnId);
+            if(!btn) return;
+            if(isLoading) {
+                btn.dataset.originalText = btn.innerHTML;
+                btn.innerHTML = '<span class="spinner"></span>';
+                btn.disabled = true;
+            } else {
+                btn.innerHTML = btn.dataset.originalText;
+                btn.disabled = false;
+            }
+        }
+
+        function resizeImage(file, maxWidth, callback) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const ratio = Math.min(maxWidth / img.width, 1);
+                    canvas.width = img.width * ratio;
+                    canvas.height = img.height * ratio;
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    callback(canvas.toDataURL(file.type, 0.7)); // Kompresja 0.7
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function checkUserRole() {
+            if (!currentUser) { currentUserRole = 'guest'; } else {
+                if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
+                // Fallback dla admin@hub.pl
+                if (currentUser.email === 'admin@hub.pl' && (!APP_DATA.userRoles[currentUser.email] || APP_DATA.userRoles[currentUser.email].role !== 'admin')) {
+                     APP_DATA.userRoles['admin@hub.pl'] = { role: 'admin', nick: 'Szef' };
+                     saveToCloud(); 
+                }
+                const userData = APP_DATA.userRoles[currentUser.email];
+                if (userData) { currentUserRole = userData.role; } else { currentUserRole = 'user'; }
+            }
+            renderAdminUsers();
+        }
+
+        function saveToCloud() { 
+            // Optymistyczny update lokalny przed wysłaniem
+            updateAppData(APP_DATA);
+            if (window.cloudAPI) window.cloudAPI.save(APP_DATA); 
+        }
+
+        function adminResetToDefaults() {
+            if(confirm("To wyczyści dane w CHMURZE. Kontynuować?")) {
+                APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+                saveToCloud(); renderAll(); showToast("Zresetowano bazę!");
+            }
+        }
+
+        // --- AUTH ---
+        async function handleLogin() {
+            const email = document.getElementById('login-email').value;
+            const pass = document.getElementById('login-password').value;
+            if(!email || !pass) return showToast("Podaj email i hasło", "error");
+
+            setLoading('btn-login-action', true);
+            try {
+                await window.cloudAPI.login(email, pass);
+                closeAuthModal();
+                showToast("Zalogowano pomyślnie!");
+                setTimeout(() => { if(currentUserRole === 'admin') switchTab('admin'); }, 1000);
+            } catch (e) {
+                showToast("Błąd logowania: " + e.message, "error");
+            } finally {
+                setLoading('btn-login-action', false);
+            }
+        }
+
+        async function handleRegister() {
+            const nick = document.getElementById('reg-nick').value;
+            const email = document.getElementById('reg-email').value;
+            const pass = document.getElementById('reg-password').value;
+            if(!nick || !email || !pass) return showToast("Wypełnij pola", "error");
+
+            setLoading('btn-reg-action', true);
+            try {
+                await window.cloudAPI.register(email, pass);
+                if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
+                const role = email === 'admin@hub.pl' ? 'admin' : 'user';
+                APP_DATA.userRoles[email] = { role: role, nick: nick };
+                saveToCloud();
+                closeAuthModal();
+                showToast("Konto założone! Witaj " + nick);
+            } catch (e) {
+                showToast("Błąd: " + e.message, "error");
+            } finally {
+                setLoading('btn-reg-action', false);
+            }
+        }
+
+        async function handleLogout() {
+            await window.cloudAPI.logout();
+            currentUser = null; currentUserRole = 'guest';
+            updateAuthUI(); closeAuthModal(); switchTab('feed'); showToast("Wylogowano");
+        }
+
+        // --- RENDER ---
+        function renderAll() {
+            loadUserProfile(); renderBlog(); renderShop(); renderAdminUsers(); updateCart();
+        }
+
+        function loadUserProfile() {
+            const config = APP_DATA.config;
+            const fullNameHTML = `${config.firstName}<span class="text-brand-purple">${config.lastName}</span>`;
+            document.getElementById('nav-logo').innerHTML = fullNameHTML;
+            document.getElementById('profile-name').innerHTML = fullNameHTML;
+            document.getElementById('profile-bio').innerText = config.bio;
+            document.getElementById('about-text').innerText = config.bio;
+            document.querySelectorAll('#profile-avatar, #about-avatar').forEach(img => img.src = config.avatarUrl);
+            document.getElementById('stat-yt').innerText = config.stats.youtube;
+            document.getElementById('stat-ig').innerText = config.stats.instagram;
+            document.getElementById('stat-projects').innerText = config.stats.projects;
+            let socialHTML = '';
+            if(config.links.instagram) socialHTML += `<a href="${config.links.instagram}" target="_blank"><i class="fab fa-instagram hover:text-brand-pink transition-colors"></i></a>`;
+            document.getElementById('social-icons').innerHTML = socialHTML;
+        }
+
+        function renderBlog() {
+            const container = document.getElementById('blog-container');
+            const isAdmin = currentUserRole === 'admin';
+            
+            // Jeśli brak postów, ale mamy dane, pokaż info
+            if(!APP_DATA.posts.length) { 
+                container.innerHTML = '<div class="text-center text-gray-500 w-full col-span-3 py-10">Brak postów.</div>'; 
+                return; 
+            }
+
+            container.innerHTML = APP_DATA.posts.map(post => {
+                const deleteBtn = isAdmin ? `<button onclick="deletePost(${post.id})" class="delete-btn absolute top-2 right-2 bg-red-500 text-white w-8 h-8 rounded-full shadow-lg hover:bg-red-600 z-10 flex items-center justify-center transition-all"><i class="fas fa-trash text-sm"></i></button>` : '';
+                const isLiked = post.likedBy && currentUser && post.likedBy.includes(currentUser.email);
+                const likeIconClass = isLiked ? 'fas text-red-500' : 'far text-gray-400';
+                const likeCountClass = isLiked ? 'text-red-500' : 'text-gray-500';
+                
+                let media = '';
+                if(post.type === 'video') media = `<div class="relative mb-3 cursor-pointer group rounded-xl overflow-hidden shadow-sm" onclick="playVideo('${post.videoUrl}')"><img src="${post.thumbnail}" class="w-full h-auto object-cover group-hover:scale-105 transition-transform duration-500"><div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors"><div class="w-12 h-12 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center group-hover:scale-110 transition-transform"><i class="fas fa-play text-white ml-1"></i></div></div></div>`;
+                else if(post.type === 'photo') media = `<div class="rounded-xl overflow-hidden shadow-sm mb-3"><img src="${post.image}" class="w-full h-auto hover:scale-105 transition-transform duration-500"></div>`;
+
+                let commentsHTML = (post.comments || []).map((c, i) => `
+                    <div class="text-sm mb-2 pb-2 border-b border-white/5 last:border-0 relative group/comment">
+                        <span class="font-bold text-white mr-2">${c.author}:</span><span class="text-gray-400">${c.text}</span>
+                        ${isAdmin ? `<button onclick="deleteComment(${post.id}, ${i})" class="absolute right-0 top-0 text-red-400 hover:text-red-600 opacity-0 group-hover/comment:opacity-100 transition-opacity"><i class="fas fa-times"></i></button>` : ''}
+                    </div>`).join('');
+
+                return `
+                <div class="bg-card-bg rounded-2xl p-5 border border-white/5 shadow-card break-inside-avoid mb-6 relative group hover:shadow-lg transition-shadow">
+                    ${deleteBtn} ${media}
+                    <h3 class="font-bold mb-2 text-lg text-white">${post.title}</h3>
+                    <p class="text-sm text-gray-400 mb-4 leading-relaxed">${post.text || ''}</p>
+                    <div class="flex justify-between items-center text-xs text-gray-500 pt-4 border-t border-white/5">
+                        <span class="flex items-center"><i class="far fa-clock mr-1"></i> ${new Date(post.date).toLocaleDateString()}</span>
+                        <div class="flex gap-3">
+                            <button onclick="toggleComments(${post.id})" class="flex items-center gap-1 hover:text-brand-purple transition-colors bg-white/5 px-3 py-1.5 rounded-full"><i class="far fa-comment-dots text-base"></i> <span class="font-bold">${post.comments ? post.comments.length : 0}</span></button>
+                            <button onclick="toggleLike(${post.id})" class="flex items-center gap-1 hover:bg-white/10 px-3 py-1.5 rounded-full transition-colors group bg-white/5"><i class="${likeIconClass} text-base group-active:scale-125 transition-transform"></i><span class="font-bold">${post.likes || 0}</span></button>
+                        </div>
+                    </div>
+                    <div id="comments-${post.id}" class="hidden mt-4 pt-4 border-t border-white/5 bg-black/30 -mx-5 -mb-5 p-5 rounded-b-2xl">
+                        <div class="max-h-40 overflow-y-auto pr-2 mb-3 no-scrollbar">${commentsHTML || '<p class="text-xs text-gray-500 italic">Brak komentarzy.</p>'}</div>
+                        <div class="flex gap-2">
+                            <input id="input-comment-${post.id}" class="bg-black border border-white/10 w-full text-sm p-2 rounded-lg text-white focus:border-brand-purple outline-none shadow-sm" placeholder="Napisz komentarz...">
+                            <button onclick="addComment(${post.id})" class="text-brand-purple bg-white/10 p-2 rounded-lg border border-white/10 hover:bg-brand-purple hover:text-white transition-colors shadow-sm"><i class="fas fa-paper-plane"></i></button>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        // Reszta funkcji logicznych (Like, Comment, Admin) - Bez zmian, działają na APP_DATA
+        function toggleLike(id) {
+            if(!currentUser) return showToast("Zaloguj się, aby polubić!", "error");
+            const post = APP_DATA.posts.find(p => p.id === id);
+            if(post) {
+                if(!post.likedBy) post.likedBy = [];
+                const idx = post.likedBy.indexOf(currentUser.email);
+                if (idx === -1) { post.likedBy.push(currentUser.email); post.likes = (post.likes || 0) + 1; }
+                else { post.likedBy.splice(idx, 1); post.likes = Math.max(0, (post.likes || 1) - 1); }
+                saveToCloud(); renderBlog();
+            }
+        }
+
+        function addComment(id) {
+            if(!currentUser) return showToast("Zaloguj się, aby skomentować!", "error");
+            const input = document.getElementById(`input-comment-${id}`);
+            if(!input.value) return;
+            const post = APP_DATA.posts.find(p => p.id === id);
+            if(post) {
+                if(!post.comments) post.comments = [];
+                const nick = APP_DATA.userRoles[currentUser.email]?.nick || currentUser.email.split('@')[0];
+                post.comments.push({author: nick, text: input.value});
+                saveToCloud(); renderBlog(); input.value = ''; showToast("Dodano komentarz");
+            }
+        }
+
+        function adminAddPost() {
+            const title = document.getElementById('admin-post-title').value;
+            if(!title) return showToast("Brak tytułu", "error");
+            setLoading('btn-post', true); 
+            const newPost = {
+                id: Date.now(), type: document.getElementById('admin-post-type').value,
+                title: title, text: document.getElementById('admin-post-text').value,
+                image: currentPostImageBase64, thumbnail: currentPostImageBase64,
+                videoUrl: document.getElementById('admin-post-video').value,
+                date: new Date().toISOString(), likes: 0, likedBy: [], comments: []
+            };
+            APP_DATA.posts.unshift(newPost);
+            saveToCloud(); renderAll(); showToast("Opublikowano!");
+            setLoading('btn-post', false);
+        }
+
+        function adminAddProduct() {
+            const name = document.getElementById('admin-prod-name').value;
+            if(!name) return showToast("Brak nazwy", "error");
+            setLoading('btn-prod', true);
+            APP_DATA.products.push({
+                id: Date.now(), name: name, price: parseFloat(document.getElementById('admin-prod-price').value),
+                img: currentProductImageBase64 || 'https://via.placeholder.com/400x500',
+                label: document.getElementById('admin-prod-label').value
+            });
+            saveToCloud(); renderAll(); showToast("Produkt dodany!");
+            setLoading('btn-prod', false);
+        }
+
+        function renderShop() {
+            const isAdmin = currentUserRole === 'admin';
+            document.getElementById('products-container').innerHTML = APP_DATA.products.map(p => `
+                <div class="group relative">
+                    ${isAdmin ? `<button onclick="deleteProduct(${p.id})" class="absolute top-2 right-2 z-20 bg-red-600 text-white w-8 h-8 flex items-center justify-center rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700"><i class="fas fa-trash"></i></button>` : ''}
+                    <div class="relative aspect-[4/5] bg-card-bg rounded-lg overflow-hidden mb-3">
+                        ${p.label ? `<span class="absolute top-2 left-2 bg-white text-black text-[10px] font-bold px-2 py-1 uppercase z-10">${p.label}</span>` : ''}
+                        <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+                        <button onclick="addToCart(${p.id})" class="absolute bottom-4 left-4 right-4 bg-brand-purple text-white font-bold py-3 rounded text-sm translate-y-[150%] opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all shadow-lg hover:bg-brand-pink">DODAJ DO KOSZYKA</button>
+                    </div>
+                    <h3 class="font-bold text-sm text-white">${p.name}</h3>
+                    <p class="text-gray-400 text-sm">${p.price} PLN</p>
+                </div>`).join('');
+        }
+
+        function addToCart(id) {
+            const product = APP_DATA.products.find(p => p.id === id);
+            const existing = cart.find(i => i.id === id);
+            if(existing) existing.qty++; else cart.push({...product, qty: 1});
+            updateCart(); toggleCart(true); showToast("Dodano do koszyka");
+        }
+        function removeFromCart(id) { cart = cart.filter(i => i.id !== id); updateCart(); }
+        function updateCart() {
+            const container = document.getElementById('cart-items');
+            if(cart.length === 0) container.innerHTML = '<div class="text-center text-gray-500 py-10">Pusto</div>';
+            else container.innerHTML = cart.map(item => `<div class="flex items-center justify-between bg-white/5 p-3 rounded-xl mb-2"><div class="flex-1 text-sm font-medium text-white">${item.name} (${item.qty})</div><button onclick="removeFromCart(${item.id})" class="text-red-400 hover:text-red-600"><i class="fas fa-trash"></i></button></div>`).join('');
+            const total = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
+            document.getElementById('cart-total').innerText = total.toFixed(2) + ' PLN';
+            const count = cart.reduce((sum, i) => sum + i.qty, 0);
+            [document.getElementById('cart-badge'), document.getElementById('cart-badge-mobile')].forEach(b => { b.innerText = count; count > 0 ? b.classList.remove('scale-0') : b.classList.add('scale-0'); });
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if(file) resizeImage(file, 800, (base64) => { currentPostImageBase64 = base64; document.getElementById('file-label').innerHTML = "Gotowe"; });
+        }
+        function handleProductFileSelect(event) {
+            const file = event.target.files[0];
+            if(file) resizeImage(file, 500, (base64) => { currentProductImageBase64 = base64; document.getElementById('prod-file-label').innerHTML = "Gotowe"; });
+        }
+
+        function toggleComments(id) { document.getElementById(`comments-${id}`).classList.toggle('hidden'); }
+        function deletePost(id) { if(confirm("Usunąć?")) { APP_DATA.posts = APP_DATA.posts.filter(p => p.id !== id); saveToCloud(); renderBlog(); } }
+        function deleteProduct(id) { if(confirm("Usunąć?")) { APP_DATA.products = APP_DATA.products.filter(p => p.id !== id); saveToCloud(); renderAll(); } }
+        function deleteComment(pid, idx) { if(confirm("Usunąć?")) { APP_DATA.posts.find(p=>p.id===pid).comments.splice(idx,1); saveToCloud(); renderBlog(); } }
+        function renderAdminUsers() {
+            if(currentUserRole !== 'admin') return;
+            const list = document.getElementById('admin-users-list');
+            document.getElementById('admin-user-count').innerText = Object.keys(APP_DATA.userRoles).length;
+            list.innerHTML = Object.entries(APP_DATA.userRoles).map(([email, data]) => `
+                <tr class="border-b border-white/5 hover:bg-white/5"><td class="p-3"><div class="font-bold text-white">${data.nick}</div><div class="text-xs text-gray-500">${email}</div></td><td class="p-3"><span class="text-xs bg-white/10 text-gray-300 px-2 py-1 rounded uppercase font-bold">${data.role}</span></td><td class="p-3 text-right">${data.role!=='admin'?`<button onclick="makeAdmin('${email}')" class="text-xs text-brand-purple mr-2">DAJ ADMINA</button>`:`<button onclick="removeAdmin('${email}')" class="text-xs text-gray-500 mr-2">ZABIERZ</button>`}</td></tr>`).join('');
+        }
+        function makeAdmin(email) { APP_DATA.userRoles[email].role='admin'; saveToCloud(); renderAdminUsers(); }
+        function removeAdmin(email) { APP_DATA.userRoles[email].role='user'; saveToCloud(); renderAdminUsers(); }
+        function adminUpdateStats() { APP_DATA.config.stats.instagram = document.getElementById('admin-stat-ig').value; APP_DATA.config.stats.youtube = document.getElementById('admin-stat-yt').value; APP_DATA.config.stats.projects = document.getElementById('admin-stat-proj').value; saveToCloud(); renderAll(); showToast("Zaktualizowano!"); }
+        function handleAuthClick() { document.getElementById('auth-modal').classList.remove('hidden'); switchAuthTab('login'); }
+        function closeAuthModal() { document.getElementById('auth-modal').classList.add('hidden'); }
+        function switchAuthTab(tab) { if(tab==='login'){document.getElementById('form-login').classList.remove('hidden');document.getElementById('form-register').classList.add('hidden');}else{document.getElementById('form-login').classList.add('hidden');document.getElementById('form-register').classList.remove('hidden');}}
+        function switchTab(tabId) { document.querySelectorAll('main > div[id^="view-"]').forEach(el=>el.classList.add('hidden')); document.getElementById(`view-${tabId}`).classList.remove('hidden'); }
+        function toggleCart(force) { const m=document.getElementById('cart-modal');const c=document.getElementById('cart-content');if(m.classList.contains('hidden')||force){m.classList.remove('hidden');setTimeout(()=>c.style.transform='translateX(0)',10);}else{c.style.transform='translateX(100%)';setTimeout(()=>m.classList.add('hidden'),300);}}
+        function playVideo(url){const id=url.split('v=')[1]?url.split('v=')[1].split('&')[0]:url.split('/').pop();document.getElementById('video-frame').src=`https://www.youtube.com/embed/${id}?autoplay=1`;document.getElementById('video-modal').classList.remove('hidden');}
+        function closeVideo(){document.getElementById('video-modal').classList.add('hidden');document.getElementById('video-frame').src='';}
+        
+        // Inicjalizacja przy starcie
+        renderAll();
+    </script>
+</body>
+</html>
