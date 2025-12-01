@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hub Twórcy - Official World</title>
+    <title>ADIS_Blog</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -39,9 +39,6 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        // --- 👑 EMAIL SZEFA (Zgodny z Firebase Rules) ---
-        const BOSS_EMAIL = "adrianniekil@gmail.com";
-
         let app, auth, db;
         try {
             app = initializeApp(firebaseConfig);
@@ -52,9 +49,9 @@
         // --- DANE DOMYŚLNE ---
         window.DEFAULT_DATA = {
             config: {
-                firstName: "ADRION", lastName: "",   
+                firstName: "ADIS", lastName: "",   
                 bio: "Buduję formę, nawyki i głowę. Bez filtrów, z pełnym zaangażowaniem.",
-                avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=1964&auto=format&fit=crop",
+                avatarUrl: "https://scontent.fktw1-1.fna.fbcdn.net/v/t1.15752-9/590430506_2072283010210305_2940276320812559902_n.jpg?stp=dst-jpg_p480x480_tt6&_nc_cat=103&ccb=1-7&_nc_sid=0024fc&_nc_ohc=67Eui4jN2YsQ7kNvwGcFOQM&_nc_oc=Adlx4JjzEc_oKB0BXAqqfCe9qj1BnHakFpV5stHvCCZCQW2V1Z5-rOsEmMwvFpXZFQ_4-LMRS4WeMPQJ79nf8K7l&_nc_ad=z-m&_nc_cid=0&_nc_zt=23&_nc_ht=scontent.fktw1-1.fna&oh=03_Q7cD4AHjuF9oTc3rs92AILuYV6IOQZM7UbgItSC4Iwb-Nk-Scg&oe=69558245",
                 stats: { youtube: "0", instagram: "168", projects: "0" },
                 links: { instagram: "https://instagram.com", youtube: "https://youtube.com" }
             },
@@ -76,6 +73,7 @@
         function startSync() {
             if(!db) return;
 
+            // 1. Główna treść (Posty, Produkty)
             const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
             onSnapshot(mainRef, (snap) => {
                 document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
@@ -87,6 +85,7 @@
                 }
             });
 
+            // 2. Interakcje (Lajki, Komentarze)
             const metaRef = collection(db, 'projects', 'ub-tworcy-adrion', 'posts_meta');
             onSnapshot(metaRef, (snap) => {
                 snap.forEach(doc => INTERACTIONS[doc.id] = doc.data());
@@ -101,10 +100,12 @@
             out: () => signOut(auth),
             updatePass: (p) => updatePassword(auth.currentUser, p),
             
+            // Cicha weryfikacja admina (Bez maila w kodzie!)
             checkAdminStatus: async () => {
                 if(!currentUser) return false;
                 try {
                     const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+                    // Próba zapisu znacznika czasu. Jeśli baza (Rules) pozwoli -> Jesteś Szefem.
                     await setDoc(mainRef, { _adminCheck: Date.now() }, { merge: true });
                     return true;
                 } catch(e) { return false; }
@@ -127,6 +128,7 @@
 
             supportCreator: async (productId, blikCode) => {
                 if(!currentUser) return;
+                // Bezpieczne szukanie po string ID
                 const product = APP_DATA.products.find(p => String(p.id) === String(productId));
                 if(!product) return;
 
@@ -352,7 +354,6 @@
 
         // --- INTERAKCJE & MODALE ---
         
-        // Uniwersalny modal wiadomości
         window.showMessage = (title, msg) => {
             document.getElementById('msg-title').innerText = title;
             document.getElementById('msg-body').innerText = msg;
@@ -362,7 +363,6 @@
             openModal('msg');
         };
 
-        // Uniwersalny modal potwierdzenia
         window.askConfirm = (title, msg, onYes) => {
             document.getElementById('msg-title').innerText = title;
             document.getElementById('msg-body').innerText = msg;
@@ -446,7 +446,7 @@
             showMessage("Info", "Dodano produkt!"); 
         };
         
-        // --- PANCERNE USUWANIE ---
+        // --- PANCERNE USUWANIE (Konwersja na String dla pewności) ---
         window.askDeletePost = (id) => { 
             askConfirm("Usuń Wpis", "Czy na pewno usunąć ten post?", () => {
                 APP_DATA.posts = APP_DATA.posts.filter(x => String(x.id) !== String(id)); 
@@ -460,8 +460,7 @@
             });
         };
         window.askDeleteComm = (pid, cObj) => {
-             // Konwersja obiektu z powrotem (bo przekazujemy go dziwną drogą w HTML)
-             if(typeof cObj === 'string') cObj = JSON.parse(cObj); // Na wypadek stringa
+             if(typeof cObj === 'string') cObj = JSON.parse(cObj);
              askConfirm("Usuń Komentarz", "Usunąć ten komentarz?", () => window.api.deleteComment(pid, cObj));
         };
 
@@ -658,7 +657,7 @@
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj do Sklepu</h3>
                     <input id="add-shop-name" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Nazwa produktu">
                     <input id="add-shop-price" type="number" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Cena">
-                    <textarea id="add-shop-desc" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none" placeholder="Opis produktu (NOWE!)"></textarea>
+                    <textarea id="add-shop-desc" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none" placeholder="Opis produktu (np. co to jest, rozmiary...)"></textarea>
                     
                     <div class="flex items-center mb-4">
                         <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
