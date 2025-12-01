@@ -83,18 +83,17 @@
         // Eksport API
         window.cloudAPI = {
             auth: auth,
-            // Funkcja sprawdzająca czy jestem adminem (z timeoutem, żeby nie wisiało)
             checkAdminPermissions: async () => {
                 if(!auth.currentUser) return false;
                 try {
-                    // Timeout 3 sekundy - jeśli baza nie odpowie, uznajemy że to nie admin
-                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000));
+                    // Próba zapisu - ostateczny test admina
                     const check = setDoc(docRef, { _lastAdminCheck: Date.now() }, { merge: true });
-                    
+                    // Timeout 4 sekundy
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4000));
                     await Promise.race([check, timeout]);
                     return true;
                 } catch(e) {
-                    // Jeśli błąd "permission-denied" -> Nie jesteś Adminem
+                    console.warn("Test Admina nieudany:", e);
                     return false;
                 }
             },
@@ -209,9 +208,16 @@
             </div>
 
             <div class="hidden md:flex items-center gap-4 text-black">
-                <div id="user-menu-desktop" class="cursor-pointer hover:text-brand-purple transition-colors" onclick="handleAuthClick()">
+                <!-- LOGGED OUT -->
+                <div id="user-menu-guest" class="cursor-pointer hover:text-brand-purple transition-colors" onclick="handleAuthClick()">
                     <i class="far fa-user-circle text-2xl"></i>
                 </div>
+                <!-- LOGGED IN (USER AVATAR) -->
+                <div id="user-menu-logged" class="hidden cursor-pointer hover:scale-110 transition-transform relative group" onclick="handleAuthClick()">
+                    <img id="nav-user-avatar" src="" class="w-8 h-8 rounded-full border border-gray-200 object-cover">
+                    <div class="absolute w-3 h-3 bg-green-500 rounded-full bottom-0 right-0 border-2 border-white"></div>
+                </div>
+
                 <div class="relative cursor-pointer hover:scale-110 transition-transform" onclick="toggleCart()">
                     <i class="fas fa-shopping-cart text-xl"></i>
                     <span id="cart-badge" class="absolute -top-2 -right-2 bg-brand-pink text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center scale-0 transition-transform shadow-md">0</span>
@@ -349,7 +355,7 @@
         </div>
     </main>
 
-    <!-- AUTH MODAL (PANEL UŻYTKOWNIKA) -->
+    <!-- AUTH MODAL / USER PANEL -->
     <div id="auth-modal" class="fixed inset-0 z-[100] bg-black/80 hidden flex items-center justify-center backdrop-blur-sm px-4">
         <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm relative max-h-[90vh] overflow-y-auto">
             <button onclick="closeAuthModal()" class="absolute top-4 right-4 text-gray-400 hover:text-black"><i class="fas fa-times text-xl"></i></button>
@@ -371,46 +377,35 @@
                 <button onclick="handleRegister()" id="btn-reg-action" class="w-full bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-800 transition-colors shadow-lg">ZAŁÓŻ KONTO</button>
             </div>
             
-            <!-- PANEL PROFILU -->
+            <!-- PANEL UŻYTKOWNIKA (WYŚWIETLANY JAKO MODAL) -->
             <div id="user-profile-view" class="hidden text-center">
-                <div class="relative w-24 h-24 mx-auto mb-4">
+                <h3 class="text-xl font-bold mb-4 border-b border-gray-100 pb-2">TWÓJ PROFIL</h3>
+                
+                <div class="relative w-24 h-24 mx-auto mb-4 group">
                     <img id="user-avatar-img" class="w-full h-full rounded-full object-cover shadow-lg bg-gray-200" src="" onerror="this.src='https://ui-avatars.com/api/?name=U&background=8b5cf6&color=fff'">
                 </div>
+                
                 <h3 id="user-display-name" class="text-2xl font-bold mb-1 text-black">User</h3>
                 <p id="user-email-display" class="text-gray-500 text-sm mb-4"></p>
-                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded">ADMIN</span></div>
+                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded">ADMIN (WŁAŚCICIEL)</span></div>
+
+                <!-- SEKCJA EDYCJI -->
+                <div class="bg-gray-50 p-4 rounded-xl text-left space-y-3 mb-4">
+                    <h4 class="text-xs font-bold text-gray-400 uppercase">Edycja Danych</h4>
+                    <div>
+                        <input id="edit-nick" type="text" class="w-full bg-white border border-gray-200 p-2 rounded text-sm text-black" placeholder="Twój nick">
+                    </div>
+                    <div>
+                        <input id="edit-avatar" type="text" placeholder="Link do avatara (URL)" class="w-full bg-white border border-gray-200 p-2 rounded text-sm text-black mb-1">
+                        <input type="file" id="edit-avatar-file" class="text-xs text-gray-500 w-full" onchange="handleAvatarFile(event)">
+                    </div>
+                    <div>
+                        <input id="edit-password" type="password" placeholder="Nowe hasło (opcjonalne)" class="w-full bg-white border border-gray-200 p-2 rounded text-sm text-black">
+                    </div>
+                    <button onclick="handleUpdateProfile()" class="w-full bg-brand-purple text-white font-bold py-2 rounded-lg text-sm hover:bg-brand-pink transition-colors">ZAPISZ ZMIANY</button>
+                </div>
 
                 <button onclick="handleLogout()" class="w-full border-2 border-red-100 text-red-500 font-bold py-2 rounded-xl hover:bg-red-50 transition-colors mb-2 text-sm">WYLOGUJ</button>
-                
-                <div class="mt-4 border-t border-gray-100 pt-4">
-                    <button onclick="document.getElementById('profile-settings').classList.toggle('hidden')" class="text-brand-purple text-sm font-bold flex items-center justify-center gap-2 hover:underline">
-                        <i class="fas fa-cog"></i> Ustawienia Profilu / Hasło
-                    </button>
-                    
-                    <div id="profile-settings" class="hidden mt-4 text-left space-y-3">
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Zmień Nick</label>
-                            <input id="edit-nick" type="text" class="w-full bg-gray-50 border border-gray-200 p-2 rounded text-sm text-black">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Avatar (Link URL)</label>
-                            <input id="edit-avatar" type="text" placeholder="https://..." class="w-full bg-gray-50 border border-gray-200 p-2 rounded text-sm text-black">
-                            <p class="text-[10px] text-gray-400 mt-1">Lub wgraj plik (opcjonalnie):</p>
-                            <input type="file" id="edit-avatar-file" class="text-xs text-gray-500 w-full" onchange="handleAvatarFile(event)">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Zmień Hasło</label>
-                            <input id="edit-password" type="password" placeholder="Nowe hasło" class="w-full bg-gray-50 border border-gray-200 p-2 rounded text-sm text-black">
-                        </div>
-                        <button onclick="handleUpdateProfile()" class="w-full bg-gray-800 text-white font-bold py-2 rounded-lg text-sm mt-2 hover:bg-black transition-colors">ZAPISZ ZMIANY</button>
-                    </div>
-                </div>
-
-                <div class="mt-4 pt-2 border-t border-gray-100">
-                    <button onclick="window.cloudAPI.checkAdminPermissions().then(isAdmin => { if(isAdmin) { location.reload(); } else { showToast('Brak uprawnień Admina', 'error'); } })" class="text-xs text-gray-400 underline hover:text-gray-600">
-                        Odśwież uprawnienia (Admin Check)
-                    </button>
-                </div>
             </div>
         </div>
     </div>
@@ -499,11 +494,12 @@
             window.cloudAPI.onAuth(async (user) => {
                 currentUser = user;
                 if(user) {
+                    showToast("Weryfikacja uprawnień...", "info");
                     // Automatyczne sprawdzenie admina przy logowaniu
                     const isAdmin = await window.cloudAPI.checkAdminPermissions();
                     if(isAdmin) {
                         currentUserRole = 'admin';
-                        console.log("Witaj Szefie!");
+                        showToast("Zalogowano jako ADMIN", "success");
                         // Zapisz/Odśwież rolę w bazie
                         if(!APP_DATA.userRoles[user.email] || APP_DATA.userRoles[user.email].role !== 'admin') {
                             if(!APP_DATA.userRoles[user.email]) APP_DATA.userRoles[user.email] = {};
@@ -513,6 +509,7 @@
                         }
                     } else {
                         currentUserRole = 'user';
+                        showToast("Zalogowano jako Użytkownik", "success");
                     }
                 } else {
                     currentUserRole = 'guest';
@@ -528,6 +525,7 @@
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             toast.className = `toast ${type}`;
+            if(type === 'info') toast.style.borderColor = '#3b82f6';
             toast.innerHTML = type==='error' ? `<i class="fas fa-exclamation-circle text-red-500 mr-2"></i> ${msg}` : `<i class="fas fa-check-circle text-green-500 mr-2"></i> ${msg}`;
             container.appendChild(toast);
             setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
@@ -593,14 +591,17 @@
 
         // --- ZARZĄDZANIE PROFILEM ---
         function updateAuthUI() {
+            // Pokaż/Ukryj odpowiednie przyciski w menu
             if(currentUser) {
+                document.getElementById('user-menu-guest').classList.add('hidden');
+                document.getElementById('user-menu-logged').classList.remove('hidden');
+                
                 document.getElementById('form-login').classList.add('hidden');
                 document.getElementById('auth-tabs').classList.add('hidden');
                 document.getElementById('user-profile-view').classList.remove('hidden');
                 
-                // Zabezpieczenie przed undefined userRoles
+                // Dane usera
                 if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
-                
                 const userData = APP_DATA.userRoles[currentUser.email] || {};
                 const displayNick = userData.nick || currentUser.email.split('@')[0];
                 const displayAvatar = userData.avatar || `https://ui-avatars.com/api/?name=${displayNick}&background=8b5cf6&color=fff`;
@@ -608,11 +609,15 @@
                 document.getElementById('user-display-name').innerText = displayNick;
                 document.getElementById('user-email-display').innerText = currentUser.email;
                 document.getElementById('user-avatar-img').src = displayAvatar;
+                document.getElementById('nav-user-avatar').src = displayAvatar;
                 
                 // Wypełnij pola edycji
                 document.getElementById('edit-nick').value = displayNick;
                 document.getElementById('edit-avatar').value = userData.avatar || '';
             } else {
+                document.getElementById('user-menu-guest').classList.remove('hidden');
+                document.getElementById('user-menu-logged').classList.add('hidden');
+
                 document.getElementById('form-login').classList.remove('hidden');
                 document.getElementById('auth-tabs').classList.remove('hidden');
                 document.getElementById('user-profile-view').classList.add('hidden');
@@ -660,7 +665,6 @@
                     showToast("Zapisano (lokalnie/admin mode off)");
                 }
                 updateAuthUI();
-                document.getElementById('profile-settings').classList.add('hidden');
             } catch(e) {
                 showToast("Błąd zapisu danych", "error");
             }
@@ -674,8 +678,7 @@
             setLoading('btn-login-action', true);
             try {
                 await window.cloudAPI.login(email, pass);
-                closeAuthModal(); // Zamknij modal natychmiast po sukcesie
-                showToast("Zalogowano! Trwa weryfikacja...", "success");
+                closeAuthModal(); 
             } catch (e) { 
                 showToast("Błąd: " + e.message, "error"); 
             } 
@@ -697,7 +700,8 @@
                 
                 updateAppData(APP_DATA);
                 
-                closeAuthModal(); 
+                // Zostawiamy otwarte, żeby user od razu widział profil i mógł zmienić avatar
+                updateAuthUI();
                 showToast("Konto założone! Witaj " + nick);
             } catch (e) { showToast("Błąd: " + e.message, "error"); } 
             finally { setLoading('btn-reg-action', false); }
