@@ -13,10 +13,9 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
         // --- KONFIGURACJA FIREBASE ---
-        // Używam danych, które wpisałeś w poprzednim kroku
         const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
@@ -47,7 +46,6 @@
                 return;
             }
             
-            // Ścieżka do głównego dokumentu strony
             docRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
             onSnapshot(docRef, (snapshot) => {
@@ -58,27 +56,22 @@
                 }
                 
                 if (snapshot.exists()) {
-                    // Mamy dane z bazy -> aktualizujemy stronę
                     window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: snapshot.data() }));
                 } else {
-                    // Baza jest pusta -> wysyłamy szablon startowy
-                    console.log("Baza pusta. Tworzę strukturę początkową...");
+                    console.log("Baza pusta. Próba inicjalizacji (tylko Admin)...");
+                    // Tylko admin będzie mógł to zrobić
                     if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
-                        .then(() => console.log("Struktura utworzona!"))
-                        .catch(err => {
-                            if (err.code === 'permission-denied') {
-                                console.error("Brak uprawnień do zapisu!");
-                                showToast("BŁĄD: Brak uprawnień w bazie (Rules)!", "error");
-                            }
-                        });
+                        .catch(err => console.log("Czekam na dane (Brak uprawnień do utworzenia bazy)."));
                 }
             }, (error) => {
                 console.error("Firebase Error:", error);
                 const statusEl = document.getElementById('cloud-status-text');
                 
                 if (error.code === 'permission-denied') {
-                    window.showToast("BRAK UPRAWNIEŃ! Zmień zakładkę 'Rules' w Firebase.", "error");
-                    if(statusEl) { statusEl.innerText = "Brak Dostępu"; statusEl.style.color = "red"; }
+                    // To normalne przy restrykcyjnych zasadach - user widzi dane, ale onSnapshot może rzucić błąd
+                    // jeśli próbuje nasłuchiwać zmian, których nie widzi.
+                    // Tutaj zakładamy "Read: true", więc błędu nie powinno być przy odczycie.
+                    if(statusEl) { statusEl.innerText = "Tylko Odczyt"; statusEl.style.color = "orange"; }
                 } else if (error.code === 'auth/api-key-not-valid' || error.message.includes('api-key')) {
                     showRepairModal("Błędny API KEY w kodzie strony!");
                 } else {
@@ -87,27 +80,26 @@
             });
         }
 
-        // Uruchomienie po załadowaniu strony
         window.addEventListener('load', () => {
              initDataSync();
         });
 
-        // --- MODAL DO SZYBKIEJ NAPRAWY ---
-        window.saveRepairConfig = function() {
-            alert("Teraz edytuj plik index.html bezpośrednio, aby zmienić konfigurację.");
-        }
-        
-        function showRepairModal(msg) {
-            const modal = document.getElementById('repair-modal');
-            if(modal) {
-                document.getElementById('repair-reason').innerHTML = msg;
-                modal.classList.remove('hidden');
-            }
-        }
-
-        // Eksport API dla reszty skryptów
+        // Eksport API
         window.cloudAPI = {
             auth: auth,
+            // Funkcja sprawdzająca czy jestem adminem (próba zapisu)
+            checkAdminPermissions: async () => {
+                if(!auth.currentUser) return false;
+                try {
+                    // Próbujemy zapisać nieszkodliwą flagę timestamp
+                    // Jeśli reguły w Firebase (gdzie jest Twój mail) pozwolą -> Jesteś Adminem
+                    await updateDoc(docRef, { _lastAdminCheck: Date.now() });
+                    return true;
+                } catch(e) {
+                    // Jeśli błąd "permission-denied" -> Nie jesteś Adminem
+                    return false;
+                }
+            },
             save: async (newData) => {
                 if (!docRef) return;
                 // Optymistyczna aktualizacja lokalna
@@ -116,14 +108,15 @@
                     await setDoc(docRef, newData, { merge: true }); 
                 } catch (e) { 
                     console.error("Błąd zapisu:", e);
-                    if(e.code === 'permission-denied') showToast("Brak uprawnień do zapisu!", "error");
+                    if(e.code === 'permission-denied') showToast("Brak uprawnień! (Tylko Właściciel)", "error");
+                    else showToast("Błąd zapisu: " + e.message, "error");
                 }
             },
             login: async (email, pass) => {
                 try {
                     await signInWithEmailAndPassword(auth, email, pass);
                 } catch(e) {
-                    if(e.code === 'auth/api-key-not-valid') showRepairModal("Błędny klucz API przy logowaniu!");
+                    if(e.code === 'auth/api-key-not-valid') showRepairModal("Błędny klucz API!");
                     throw e;
                 }
             },
@@ -131,6 +124,15 @@
             logout: async () => signOut(auth),
             onAuth: (cb) => { if(auth) onAuthStateChanged(auth, cb); }
         };
+
+        window.saveRepairConfig = function() { alert("Edytuj plik index.html!"); }
+        function showRepairModal(msg) {
+            const modal = document.getElementById('repair-modal');
+            if(modal) {
+                document.getElementById('repair-reason').innerHTML = msg;
+                modal.classList.remove('hidden');
+            }
+        }
     </script>
 
     <script>
@@ -178,15 +180,8 @@
     <!-- REPAIR MODAL -->
     <div id="repair-modal" class="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center hidden p-4">
         <div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl text-center">
-            <div class="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">
-                <i class="fas fa-plug"></i>
-            </div>
             <h2 class="text-2xl font-bold text-gray-900 mb-2">Problem z konfiguracją</h2>
             <p id="repair-reason" class="text-red-500 font-bold text-sm mb-4"></p>
-            <p class="text-gray-600 text-sm mb-4">
-                Twoje klucze API wydają się niepoprawne lub baza odrzuca połączenie.<br>
-                Sprawdź czy w pliku <code>index.html</code> poprawnie wkleiłeś <code>apiKey</code>, <code>projectId</code> itd.
-            </p>
             <button onclick="location.reload()" class="w-full bg-brand-purple text-white font-bold py-3 rounded-xl hover:bg-brand-pink transition-all shadow-lg">ODŚWIEŻ STRONĘ</button>
         </div>
     </div>
@@ -370,7 +365,6 @@
                 <input id="login-email" type="email" placeholder="Email" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-3 text-black outline-none focus:ring-2 focus:ring-brand-purple/20">
                 <input id="login-password" type="password" placeholder="Hasło" class="w-full bg-gray-50 border border-gray-200 p-4 rounded-xl mb-4 text-black outline-none focus:ring-2 focus:ring-brand-purple/20">
                 <button onclick="handleLogin()" id="btn-login-action" class="w-full bg-brand-purple text-white font-bold py-4 rounded-xl hover:bg-brand-pink transition-colors shadow-lg">ZALOGUJ SIĘ</button>
-                <p class="text-xs text-gray-400 mt-4 text-center">Admin: admin@hub.pl (zarejestruj się by aktywować)</p>
             </div>
             
             <div id="form-register" class="hidden">
@@ -415,7 +409,7 @@
     </div>
 
     <script>
-        // DOMYŚLNE DANE (Template) - Służą do inicjalizacji pustej bazy
+        // DOMYŚLNE DANE (Template)
         window.DEFAULT_DATA_TEMPLATE = {
             config: {
                 firstName: "ADRION", lastName: "___",   
@@ -426,12 +420,10 @@
                 links: { instagram: "https://www.instagram.com/___adrion___/" }
             },
             posts: [
-                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zaloguj się jako admin@hub.pl aby przejąć kontrolę.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
+                { id: 101, type: 'status', title: 'Witaj na stronie!', text: 'Zaloguj się jako Właściciel, aby zarządzać.', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }
             ],
             products: [],
-            userRoles: {
-                'admin@hub.pl': { role: 'admin', nick: 'Szef' }
-            }
+            userRoles: {}
         };
 
         const CACHE_KEY = 'hub_data_cache_prod';
@@ -463,8 +455,25 @@
         });
 
         if (window.cloudAPI) {
-            window.cloudAPI.onAuth((user) => {
+            window.cloudAPI.onAuth(async (user) => {
                 currentUser = user;
+                if(user) {
+                    // Magia: Sprawdzamy czy mamy prawo zapisu
+                    const isAdmin = await window.cloudAPI.checkAdminPermissions();
+                    if(isAdmin) {
+                        currentUserRole = 'admin';
+                        // Jeśli jesteśmy adminem, a nie ma nas w userRoles, dopisujemy się
+                        if(!APP_DATA.userRoles[user.email] || APP_DATA.userRoles[user.email].role !== 'admin') {
+                            APP_DATA.userRoles[user.email] = { role: 'admin', nick: 'Szef' };
+                            window.cloudAPI.save(APP_DATA);
+                        }
+                    } else {
+                        currentUserRole = 'user';
+                    }
+                } else {
+                    currentUserRole = 'guest';
+                }
+                
                 checkUserRole();
                 updateAuthUI();
             });
@@ -512,19 +521,16 @@
         }
 
         function checkUserRole() {
-            if (!currentUser) { currentUserRole = 'guest'; } else {
-                if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
-                // Force admin role for admin@hub.pl
-                if (currentUser.email === 'admin@hub.pl' && (!APP_DATA.userRoles[currentUser.email] || APP_DATA.userRoles[currentUser.email].role !== 'admin')) {
-                     APP_DATA.userRoles['admin@hub.pl'] = { role: 'admin', nick: 'Szef' };
-                     saveToCloud(); 
-                }
-                const userData = APP_DATA.userRoles[currentUser.email];
-                if (userData) { currentUserRole = userData.role; } else { currentUserRole = 'user'; }
+            // Logika ról jest teraz sterowana przez onAuth i checkAdminPermissions
+            
+            // UI Admina
+            if(currentUserRole === 'admin') {
+                document.getElementById('nav-admin-btn').classList.remove('hidden');
+                document.getElementById('admin-bar').classList.remove('hidden');
+            } else {
+                document.getElementById('nav-admin-btn').classList.add('hidden');
+                document.getElementById('admin-bar').classList.add('hidden');
             }
-            // Pokaż/ukryj przycisk admina
-            if(currentUserRole === 'admin') document.getElementById('nav-admin-btn').classList.remove('hidden');
-            else document.getElementById('nav-admin-btn').classList.add('hidden');
             
             renderAdminUsers();
         }
@@ -534,6 +540,9 @@
         function adminResetToDefaults() {
             if(confirm("To wyczyści dane w CHMURZE. Kontynuować?")) {
                 APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA_TEMPLATE));
+                if(currentUser && currentUserRole === 'admin') {
+                     APP_DATA.userRoles[currentUser.email] = { role: 'admin', nick: 'Szef' };
+                }
                 saveToCloud(); renderAll(); showToast("Zresetowano bazę!");
             }
         }
@@ -551,7 +560,6 @@
             }
         }
 
-        // --- AUTH ---
         async function handleLogin() {
             const email = document.getElementById('login-email').value;
             const pass = document.getElementById('login-password').value;
@@ -560,7 +568,7 @@
             try {
                 await window.cloudAPI.login(email, pass);
                 closeAuthModal(); showToast("Zalogowano pomyślnie!");
-                setTimeout(() => { if(currentUserRole === 'admin') switchTab('admin'); }, 1000);
+                setTimeout(() => { if(currentUserRole === 'admin') switchTab('admin'); }, 1500); // Małe opóźnienie na checkAdminPermissions
             } catch (e) { showToast("Błąd logowania: " + e.message, "error"); } 
             finally { setLoading('btn-login-action', false); }
         }
@@ -573,10 +581,10 @@
             setLoading('btn-reg-action', true);
             try {
                 await window.cloudAPI.register(email, pass);
+                // Próba rejestracji jako user (bez uprawnień zapisu, lokalnie)
                 if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
-                const role = email === 'admin@hub.pl' ? 'admin' : 'user';
-                APP_DATA.userRoles[email] = { role: role, nick: nick };
-                saveToCloud();
+                APP_DATA.userRoles[email] = { role: 'user', nick: nick };
+                
                 closeAuthModal(); showToast("Konto założone! Witaj " + nick);
             } catch (e) { showToast("Błąd: " + e.message, "error"); } 
             finally { setLoading('btn-reg-action', false); }
