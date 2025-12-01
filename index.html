@@ -28,7 +28,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc, updateDoc, arrayUnion, arrayRemove, addDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
@@ -39,7 +39,7 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
-        const BOSS_EMAIL = "adrianniekil@gmail.com";
+        const APP_ID = 'ub-tworcy-adrion';
 
         let app, auth, db;
         try {
@@ -65,18 +65,18 @@
         let INTERACTIONS = {}; 
         let USERS_CACHE = {};
         let ORDERS_CACHE = [];
-        let MY_CART = [];
         
         let currentUser = null;
         let isAdmin = false;
         let uploadBuffer = '';
+        let currentProductView = null; // Do modala produktu
 
         // --- SYNCHRONIZACJA ---
         function startSync() {
             if(!db) return;
 
             // 1. Główna treść
-            const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+            const mainRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'content');
             onSnapshot(mainRef, (snap) => {
                 document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
                 if (snap.exists()) {
@@ -88,11 +88,22 @@
             });
 
             // 2. Interakcje
-            const metaRef = collection(db, 'projects', 'ub-tworcy-adrion', 'posts_meta');
+            const metaRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta');
             onSnapshot(metaRef, (snap) => {
                 snap.forEach(doc => INTERACTIONS[doc.id] = doc.data());
                 refreshView();
             });
+
+            // 3. Zamówienia (Dla Admina)
+            if (isAdmin) {
+                const ordersRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'orders');
+                onSnapshot(ordersRef, (snap) => {
+                    ORDERS_CACHE = [];
+                    snap.forEach(doc => ORDERS_CACHE.push({ id: doc.id, ...doc.data() }));
+                    ORDERS_CACHE.sort((a,b) => new Date(b.date) - new Date(a.date));
+                    renderAdminOrders();
+                });
+            }
         }
 
         // --- API ---
@@ -104,16 +115,15 @@
             checkAdminStatus: async () => {
                 if(!currentUser) return false;
                 try {
-                    const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+                    const mainRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'content');
                     await setDoc(mainRef, { _adminCheck: Date.now() }, { merge: true });
                     return true;
                 } catch(e) { return false; }
             },
 
-            // ZAPIS DANYCH STRONY (POSTY, PRODUKTY, KONFIGURACJA)
             saveContent: async () => {
                 if(isAdmin) {
-                    const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+                    const mainRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'content');
                     await setDoc(mainRef, APP_DATA, { merge: true });
                 }
                 refreshView();
@@ -123,49 +133,36 @@
                 if(!currentUser) return;
                 USERS_CACHE[currentUser.uid] = { ...USERS_CACHE[currentUser.uid], ...data };
                 updateNavState();
-                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), data, { merge: true });
+                await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'users', currentUser.uid), data, { merge: true });
             },
 
-            saveCart: async () => {
-                if(currentUser) {
-                    await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), { cart: MY_CART }, { merge: true });
-                } else {
-                    localStorage.setItem('local_cart', JSON.stringify(MY_CART));
-                }
-                renderCart();
-            },
-
-            placeOrder: async (orderDetails) => {
+            // POJEDYNCZE WSPARCIE / ZAKUP (BEZ KOSZYKA)
+            supportCreator: async (productId, blikCode) => {
                 if(!currentUser) return;
-                const order = {
-                    id: 'ORD-' + Date.now(),
-                    date: new Date().toISOString(),
-                    items: MY_CART,
-                    total: MY_CART.reduce((s, i) => s + parseFloat(i.price), 0),
-                    details: orderDetails,
-                    status: 'nowe',
-                    userEmail: currentUser.email
+                const product = APP_DATA.products.find(p => p.id === productId);
+                if(!product) return;
+
+                const orderData = {
+                    userId: currentUser.uid,
+                    userEmail: currentUser.email,
+                    items: [product], // Tylko ten jeden produkt
+                    total: parseFloat(product.price),
+                    details: { blik: blikCode, type: 'Wsparcie/Zakup' },
+                    status: 'Opłacone (BLIK)',
+                    date: new Date().toISOString()
                 };
+
+                await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'orders'), orderData);
                 
-                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), { 
-                    orders: arrayUnion(order),
-                    cart: [] 
+                // Zapisz też w historii usera
+                await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'users', currentUser.uid), { 
+                    orders: arrayUnion(orderData)
                 }, { merge: true });
-
-                // Jeśli jesteś adminem, to odświeży widok zamówień
-                if(isAdmin) {
-                    // W tej uproszczonej wersji baza zamówień jest w userach, więc admin musi pobrać wszystkich userów
-                    // aby zobaczyć zamówienia. To się dzieje przy starcie.
-                }
-
-                MY_CART = []; 
-                renderCart();
-                return order.id;
             },
 
             toggleLike: async (postId) => {
                 if(!currentUser) return openModal('auth');
-                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const postRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta', String(postId));
                 const currentLikes = INTERACTIONS[postId]?.likes || [];
                 const isLiked = currentLikes.includes(currentUser.uid);
 
@@ -175,14 +172,14 @@
 
             addComment: async (postId, text) => {
                 if(!currentUser) return;
-                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const postRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta', String(postId));
                 const comment = { id: Date.now(), uid: currentUser.uid, text: text, date: new Date().toISOString() };
                 await setDoc(postRef, { comments: arrayUnion(comment) }, { merge: true });
             },
 
             deleteComment: async (postId, commentObject) => {
                 if(!isAdmin) return;
-                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const postRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'posts_meta', String(postId));
                 await updateDoc(postRef, { comments: arrayRemove(commentObject) });
             }
         };
@@ -196,29 +193,21 @@
 
                 if (user) {
                     window.api.checkAdminStatus().then(isBoss => {
-                        if(isBoss) { isAdmin = true; updateNavState(); refreshView(); }
+                        if(isBoss) { 
+                            isAdmin = true; 
+                            updateNavState(); 
+                            refreshView();
+                            startSync();
+                        }
                     });
 
-                    const uDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
-                    if(uDoc.exists()) {
-                        const data = uDoc.data();
-                        USERS_CACHE[user.uid] = data;
-                        MY_CART = data.cart || []; 
-                    } else {
-                        window.api.saveProfile({ nick: user.email.split('@')[0], email: user.email });
-                    }
+                    const uDoc = await getDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'users', user.uid));
+                    if(uDoc.exists()) USERS_CACHE[user.uid] = uDoc.data();
+                    else window.api.saveProfile({ nick: user.email.split('@')[0], email: user.email });
                     
-                    const allUsers = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
-                    allUsers.forEach(d => {
-                        const data = d.data();
-                        USERS_CACHE[d.id] = data;
-                        if(data.orders) ORDERS_CACHE.push(...data.orders);
-                    });
-                } else {
-                    MY_CART = JSON.parse(localStorage.getItem('local_cart') || '[]');
+                    const allUsers = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', 'users'));
+                    allUsers.forEach(d => USERS_CACHE[d.id] = d.data());
                 }
-                
-                renderCart();
                 refreshView();
                 startSync();
             });
@@ -252,7 +241,6 @@
         }
 
         function fillAdminSettings() {
-            // Wypełnij formularz ustawień aktualnymi danymi
             const c = APP_DATA.config;
             document.getElementById('set-name').value = c.firstName;
             document.getElementById('set-lastname').value = c.lastName;
@@ -313,57 +301,22 @@
 
         function renderShop() {
             const list = document.getElementById('shop-list');
-            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Sklep wkrótce...</div>'; return; }
+            if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Brak produktów wsparcia.</div>'; return; }
             list.innerHTML = APP_DATA.products.map(p => `
-                <div class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300">
-                    ${isAdmin ? `<button onclick="delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
-                    <div class="aspect-square overflow-hidden bg-dark-900"><img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500"></div>
+                <div onclick="openProductModal(${p.id})" class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300 cursor-pointer">
+                    ${isAdmin ? `<button onclick="event.stopPropagation(); delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
+                    <div class="aspect-square overflow-hidden bg-dark-900 relative">
+                        <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+                        <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center font-bold">ZOBACZ SZCZEGÓŁY</div>
+                    </div>
                     <div class="p-4">
                         <h3 class="font-bold text-white mb-1 truncate">${p.name}</h3>
                         <div class="flex justify-between items-center mt-3">
-                            <span class="text-brand-DEFAULT font-bold">${p.price} PLN</span>
-                            <button onclick="addToCart(${p.id})" class="bg-white text-black px-3 py-1 rounded-lg text-xs font-bold hover:bg-gray-200 transition">DO KOSZYKA</button>
+                            <span class="text-brand-DEFAULT font-bold text-lg">${p.price} PLN</span>
+                            <span class="text-xs text-gray-400">Wesprzyj</span>
                         </div>
                     </div>
                 </div>`).join('');
-        }
-
-        function renderCart() {
-            const list = document.getElementById('cart-items');
-            const badge = document.getElementById('cart-badge');
-            const badgeMob = document.getElementById('cart-badge-mob');
-            const checkoutList = document.getElementById('checkout-items-summary');
-            
-            badge.innerText = MY_CART.length;
-            badge.classList.toggle('hidden', MY_CART.length === 0);
-            badgeMob.innerText = MY_CART.length;
-            badgeMob.classList.toggle('hidden', MY_CART.length === 0);
-
-            if(MY_CART.length === 0) {
-                const emptyHTML = '<div class="text-center text-gray-500 mt-10">Pusty koszyk</div>';
-                list.innerHTML = emptyHTML;
-                if(checkoutList) checkoutList.innerHTML = emptyHTML;
-                document.querySelectorAll('.cart-total-display').forEach(el => el.innerText = "0.00 PLN");
-                return;
-            }
-
-            let total = 0;
-            const itemsHTML = MY_CART.map((item, idx) => {
-                total += parseFloat(item.price);
-                return `
-                <div class="flex items-center gap-3 bg-dark-900 p-3 rounded-xl mb-2">
-                    <img src="${item.img}" class="w-12 h-12 rounded object-cover">
-                    <div class="flex-1">
-                        <div class="text-sm font-bold text-white">${item.name}</div>
-                        <div class="text-xs text-brand-DEFAULT">${item.price} PLN</div>
-                    </div>
-                    <button onclick="removeFromCart(${idx})" class="text-gray-500 hover:text-red-500"><i class="fas fa-trash"></i></button>
-                </div>`;
-            }).join('');
-
-            list.innerHTML = itemsHTML;
-            if(checkoutList) checkoutList.innerHTML = itemsHTML; 
-            document.querySelectorAll('.cart-total-display').forEach(el => el.innerText = total.toFixed(2) + " PLN");
         }
 
         function renderAdminUsers() {
@@ -374,11 +327,8 @@
 
         function renderAdminOrders() {
             const list = document.getElementById('admin-orders-table');
-            // Sortowanie zamówień (najnowsze pierwsze)
-            ORDERS_CACHE.sort((a,b) => new Date(b.date) - new Date(a.date));
-            
             document.getElementById('admin-orders-count').innerText = ORDERS_CACHE.length;
-            if(ORDERS_CACHE.length === 0) { list.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-500">Brak zamówień</td></tr>'; return; }
+            if(ORDERS_CACHE.length === 0) { list.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-500">Brak wsparcia</td></tr>'; return; }
 
             list.innerHTML = ORDERS_CACHE.map(o => `
                 <tr class="border-b border-dark-700 hover:bg-dark-700/50">
@@ -387,68 +337,59 @@
                         <div class="text-xs text-gray-400">${new Date(o.date).toLocaleDateString()}</div>
                     </td>
                     <td class="p-3 text-sm text-white">
-                        ${o.details.name}<br>
-                        <span class="text-gray-500 text-xs">${o.userEmail}</span>
+                        ${o.userEmail}<br>
+                        <span class="text-gray-500 text-xs">${o.items[0]?.name}</span>
                     </td>
                     <td class="p-3 text-sm text-white font-bold">${o.total} PLN</td>
                     <td class="p-3">
-                        <span class="bg-green-500/20 text-green-500 px-2 py-1 rounded text-xs font-bold uppercase">${o.status}</span>
+                        <span class="bg-green-500/20 text-green-500 px-2 py-1 rounded text-xs font-bold uppercase">BLIK OK</span>
                     </td>
                 </tr>
             `).join('');
         }
 
         // --- INTERAKCJE ---
-        window.addToCart = (id) => {
-            const prod = APP_DATA.products.find(p => String(p.id) === String(id));
-            if(prod) {
-                MY_CART.push(prod);
-                window.api.saveCart();
-                openModal('cart');
-            }
-        };
-        window.removeFromCart = (idx) => { 
-            MY_CART.splice(idx, 1); 
-            window.api.saveCart();
-        };
-
-        window.goToCheckout = () => {
-            if(!currentUser) { alert("Musisz się zalogować, aby złożyć zamówienie!"); return openModal('auth'); }
-            if(MY_CART.length === 0) return alert("Koszyk jest pusty!");
-            document.getElementById('cart-view').classList.add('hidden');
-            document.getElementById('checkout-view').classList.remove('hidden');
-        };
-
-        window.backToCart = () => {
-            document.getElementById('checkout-view').classList.add('hidden');
-            document.getElementById('cart-view').classList.remove('hidden');
-        };
-
-        window.submitOrder = async () => {
-            const form = {
-                name: document.getElementById('order-name').value,
-                address: document.getElementById('order-address').value,
-                city: document.getElementById('order-city').value,
-                phone: document.getElementById('order-phone').value,
-                blik: document.getElementById('order-blik').value
-            };
+        
+        // NOWE: Otwieranie szczegółów produktu
+        window.openProductModal = (id) => {
+            const p = APP_DATA.products.find(x => x.id === id);
+            if(!p) return;
+            currentProductView = p;
             
-            if(!form.name || !form.address || !form.city || !form.phone || !form.blik) return alert("Wypełnij wszystkie dane!");
-            if(form.blik.length !== 6) return alert("Kod BLIK musi mieć 6 cyfr!");
+            document.getElementById('prod-img').src = p.img;
+            document.getElementById('prod-name').innerText = p.name;
+            document.getElementById('prod-price').innerText = p.price + ' PLN';
+            document.getElementById('prod-desc').innerText = p.desc || "Brak opisu."; // Wyświetl opis
+            
+            // Reset płatności
+            document.getElementById('pay-blik-input').value = '';
+            document.getElementById('pay-blik-section').classList.add('hidden');
+            document.getElementById('btn-show-blik').classList.remove('hidden');
+            
+            openModal('product');
+        };
 
-            const btn = document.getElementById('btn-order-submit');
-            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> PRZETWARZANIE...';
+        window.showBlikInput = () => {
+            if(!currentUser) { alert("Zaloguj się, aby wesprzeć."); return openModal('auth'); }
+            document.getElementById('btn-show-blik').classList.add('hidden');
+            document.getElementById('pay-blik-section').classList.remove('hidden');
+        };
+
+        window.submitSupport = async () => {
+            const code = document.getElementById('pay-blik-input').value;
+            if(code.length !== 6) return alert("Kod BLIK musi mieć 6 cyfr.");
+            
+            const btn = document.getElementById('btn-pay-confirm');
+            btn.innerText = "Przetwarzanie...";
             btn.disabled = true;
 
             setTimeout(async () => {
                 try {
-                    const orderId = await window.api.placeOrder(form);
-                    alert(`✅ Płatność przyjęta!\nZamówienie zostało złożone.`);
-                    closeModal('cart');
-                    backToCart();
-                    document.getElementById('order-blik').value = '';
-                } catch(e) { alert("Błąd: " + e.message); } 
-                finally { btn.innerText = "ZATWIERDŹ I ZAPŁAĆ (BLIK)"; btn.disabled = false; }
+                    await window.api.supportCreator(currentProductView.id, code);
+                    alert("Dziękuję za wsparcie! 💜");
+                    closeModal('product');
+                } catch(e) { alert("Błąd: " + e.message); }
+                finally { btn.innerText = "ZATWIERDŹ"; btn.disabled = false; }
             }, 2000);
         };
 
@@ -470,7 +411,23 @@
         window.addComm = (id) => { const inp = document.getElementById('in-c-'+id); if(!inp.value.trim()) return; window.api.addComment(id, inp.value.trim()); inp.value = ''; };
         window.deleteComment = (pid, cObj) => window.api.deleteComment(pid, cObj);
         window.addPost = () => { const t = document.getElementById('add-p-title').value; if(!t) return; APP_DATA.posts.unshift({ id: Date.now(), title: t, text: document.getElementById('add-p-text').value, type: document.getElementById('add-p-type').value, image: uploadBuffer, videoUrl: document.getElementById('add-p-video').value, date: new Date().toISOString() }); window.api.saveContent(); uploadBuffer = ''; alert("Dodano!"); };
-        window.addProd = () => { const n = document.getElementById('add-shop-name').value; if(!n) return; APP_DATA.products.push({ id: Date.now(), name: n, price: document.getElementById('add-shop-price').value, img: uploadBuffer || 'https://via.placeholder.com/300' }); window.api.saveContent(); uploadBuffer = ''; alert("Dodano!"); };
+        
+        // NOWE: Dodawanie produktu z opisem
+        window.addProd = () => { 
+            const n = document.getElementById('add-shop-name').value; 
+            if(!n) return; 
+            APP_DATA.products.push({ 
+                id: Date.now(), 
+                name: n, 
+                price: document.getElementById('add-shop-price').value, 
+                desc: document.getElementById('add-shop-desc').value, // Zapisz opis
+                img: uploadBuffer || 'https://via.placeholder.com/300' 
+            }); 
+            window.api.saveContent(); 
+            uploadBuffer = ''; 
+            alert("Dodano!"); 
+        };
+        
         window.delPost = (id) => { if(confirm('Usunąć?')) { APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== id); window.api.saveContent(); } };
         window.delProd = (id) => { if(confirm('Usunąć?')) { APP_DATA.products = APP_DATA.products.filter(x => x.id !== id); window.api.saveContent(); } };
 
@@ -565,10 +522,6 @@
                 <div id="nav-user-profile" class="hidden cursor-pointer relative group" onclick="toggleUserMenu()">
                     <img id="user-av-small" src="" class="w-9 h-9 rounded-full bg-dark-700 object-cover border border-dark-600 group-hover:border-brand-DEFAULT transition">
                 </div>
-                <div class="relative cursor-pointer hover:text-brand-DEFAULT transition" onclick="openModal('cart')">
-                    <i class="fas fa-shopping-bag text-xl"></i>
-                    <span id="cart-badge" class="absolute -top-2 -right-2 bg-brand-DEFAULT text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center hidden">0</span>
-                </div>
             </div>
         </div>
     </nav>
@@ -577,10 +530,6 @@
     <nav class="fixed top-0 w-full bg-dark-900/95 backdrop-blur-md border-b border-dark-700 z-40 h-14 flex items-center justify-between px-4 md:hidden">
         <div class="font-bold text-xl tracking-tighter">HUB<span class="text-brand-DEFAULT">.</span></div>
         <div class="flex gap-4 items-center">
-             <div class="relative cursor-pointer" onclick="openModal('cart')">
-                <i class="fas fa-shopping-bag text-lg text-white"></i>
-                <span id="cart-badge-mob" class="absolute -top-1 -right-1 bg-brand-DEFAULT text-white text-[9px] font-bold w-3 h-3 rounded-full flex items-center justify-center hidden">0</span>
-            </div>
             <div class="cursor-pointer" onclick="toggleUserMenu()">
                 <i class="fas fa-bars text-xl text-white"></i>
             </div>
@@ -674,17 +623,17 @@
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 h-fit">
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj do Sklepu</h3>
                     <input id="add-shop-name" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Nazwa produktu">
-                    <div class="flex gap-3 mb-4">
-                        <input id="add-shop-price" type="number" class="w-1/3 bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Cena">
-                        <div class="flex-1 flex items-center">
-                            <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
-                        </div>
+                    <input id="add-shop-price" type="number" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Cena">
+                    <textarea id="add-shop-desc" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none" placeholder="Opis produktu (co to jest, dlaczego warto...)"></textarea>
+                    
+                    <div class="flex items-center mb-4">
+                        <input type="file" id="add-shop-file" class="text-xs text-gray-500 w-full" onchange="handleFile(event)">
                     </div>
                     <button onclick="addProd()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition">DODAJ PRODUKT</button>
                 </div>
             </div>
 
-            <!-- USTAWIENIA STRONY (NOWE!) -->
+            <!-- USTAWIENIA STRONY -->
             <div id="admin-tab-settings" class="admin-tab-content hidden bg-dark-800 p-6 rounded-2xl border border-dark-700 max-w-2xl">
                 <h3 class="font-bold text-xl mb-6 text-white">Konfiguracja Strony Głównej</h3>
                 
@@ -754,9 +703,7 @@
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-sm">
                         <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">ID/Data</th><th class="pb-2">Klient</th><th class="pb-2">Kwota</th><th class="pb-2">Status</th></tr></thead>
-                        <tbody id="admin-orders-table">
-                            <!-- Tutaj wpadną zamówienia -->
-                        </tbody>
+                        <tbody id="admin-orders-table"></tbody>
                     </table>
                 </div>
             </div>
@@ -804,63 +751,37 @@
         </div>
     </div>
 
-    <!-- MODAL KOSZYK -->
-    <div id="modal-cart" class="fixed inset-0 bg-black/80 z-[60] flex justify-end hidden">
-        <div class="absolute inset-0" onclick="closeModal('cart')"></div>
-        <div class="bg-dark-800 w-full max-w-md h-full border-l border-dark-700 shadow-2xl flex flex-col relative animate-fade-in">
-            <button onclick="closeModal('cart')" class="absolute top-6 right-6 text-gray-400 hover:text-white z-10"><i class="fas fa-times text-xl"></i></button>
+    <!-- MODAL PRODUKTU (WSPARCIE) -->
+    <div id="modal-product" class="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center hidden backdrop-blur-sm p-4">
+        <div class="bg-dark-800 w-full max-w-2xl rounded-2xl border border-dark-600 p-0 relative flex flex-col md:flex-row overflow-hidden shadow-2xl">
+            <button onclick="closeModal('product')" class="absolute top-4 right-4 text-white z-10 bg-black/50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-black transition"><i class="fas fa-times"></i></button>
             
-            <!-- WIDOK LISTY -->
-            <div id="cart-view" class="h-full flex flex-col p-6">
-                <h2 class="text-3xl font-black mb-6">TWOJE ZAKUPY</h2>
-                <div id="cart-items" class="flex-1 overflow-y-auto custom-scroll space-y-3"></div>
-                <div class="mt-6 pt-6 border-t border-dark-700">
-                    <div class="flex justify-between items-center mb-4 text-xl">
-                        <span class="text-gray-400">SUMA:</span>
-                        <span class="font-bold text-white cart-total-display">0.00 PLN</span>
-                    </div>
-                    <button onclick="goToCheckout()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-4 rounded-xl transition">PRZEJDŹ DO PŁATNOŚCI</button>
-                </div>
+            <!-- Obrazek -->
+            <div class="w-full md:w-1/2 bg-black h-64 md:h-auto">
+                <img id="prod-img" class="w-full h-full object-cover">
             </div>
 
-            <!-- WIDOK KASY (CHECKOUT) -->
-            <div id="checkout-view" class="h-full flex flex-col p-6 hidden">
-                <button onclick="backToCart()" class="text-sm text-gray-400 hover:text-white mb-4 flex items-center gap-2"><i class="fas fa-arrow-left"></i> Wróć do koszyka</button>
-                <h2 class="text-2xl font-black mb-6">DANE DO WYSYŁKI</h2>
+            <!-- Treść -->
+            <div class="w-full md:w-1/2 p-8 flex flex-col">
+                <h2 id="prod-name" class="text-3xl font-black mb-2 text-white leading-tight">Nazwa</h2>
+                <div id="prod-price" class="text-2xl font-bold text-brand-DEFAULT mb-6">0 PLN</div>
                 
-                <div class="flex-1 overflow-y-auto custom-scroll space-y-4 pr-2">
-                    <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
-                        <div class="space-y-3">
-                            <input id="order-name" type="text" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Imię i Nazwisko">
-                            <input id="order-address" type="text" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Ulica i numer">
-                            <input id="order-city" type="text" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Kod pocztowy i Miasto">
-                            <input id="order-phone" type="tel" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Numer telefonu">
-                        </div>
-                    </div>
-
-                    <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
-                        <h3 class="font-bold text-sm text-gray-400 mb-3 uppercase">Płatność</h3>
-                        <div class="space-y-2">
-                            <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition border border-dark-700 border-brand-DEFAULT">
-                                <input type="radio" name="payment" value="blik" checked class="accent-brand-DEFAULT">
-                                <span class="font-bold">BLIK</span>
-                            </label>
-                            <input id="order-blik" type="text" maxlength="6" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white text-center tracking-widest text-xl" placeholder="KOD BLIK (6 cyfr)">
-                        </div>
-                    </div>
-
-                    <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
-                        <h3 class="font-bold text-sm text-gray-400 mb-2 uppercase">Podsumowanie</h3>
-                        <div id="checkout-items-summary" class="text-sm text-gray-300 space-y-1 mb-2"></div>
-                        <div class="flex justify-between font-bold text-white border-t border-dark-700 pt-2">
-                            <span>Razem do zapłaty:</span>
-                            <span class="cart-total-display text-brand-DEFAULT">0.00 PLN</span>
-                        </div>
-                    </div>
+                <div class="flex-1 overflow-y-auto mb-6 pr-2 custom-scroll max-h-48">
+                    <p id="prod-desc" class="text-gray-300 text-sm leading-relaxed">Opis...</p>
                 </div>
 
-                <div class="mt-4 pt-4 border-t border-dark-700">
-                    <button id="btn-order-submit" onclick="submitOrder()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-green-900/20">ZATWIERDŹ I ZAPŁAĆ (BLIK)</button>
+                <!-- Przyciski akcji -->
+                <div id="pay-btn-section">
+                    <button id="btn-show-blik" onclick="showBlikInput()" class="w-full bg-white text-black font-bold py-3 rounded-xl hover:bg-gray-200 transition mb-2">WESPRZYJ (KUP)</button>
+                </div>
+
+                <!-- Sekcja BLIK (ukryta) -->
+                <div id="pay-blik-section" class="hidden mt-auto">
+                    <p class="text-xs text-gray-400 mb-2 uppercase font-bold">Podaj kod BLIK:</p>
+                    <div class="flex gap-2">
+                        <input id="pay-blik-input" type="text" maxlength="6" class="w-full bg-dark-900 border border-brand-DEFAULT p-3 rounded-lg text-center text-xl font-bold tracking-widest text-white" placeholder="000 000">
+                        <button id="btn-pay-confirm" onclick="submitSupport()" class="bg-brand-DEFAULT px-4 rounded-lg font-bold text-white hover:bg-brand-hover transition">OK</button>
+                    </div>
                 </div>
             </div>
         </div>
