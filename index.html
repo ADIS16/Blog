@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hub Twórcy - Official World</title>
     
-    <!-- Stylizacja i Ikony -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
@@ -17,8 +16,8 @@
                 extend: {
                     fontFamily: { sans: ['Outfit', 'sans-serif'] },
                     colors: { 
-                        brand: { DEFAULT: '#8b5cf6', hover: '#7c3aed', dark: '#6d28d9' }, // Fiolet
-                        dark: { 900: '#0f0f11', 800: '#18181b', 700: '#27272a', 600: '#3f3f46' } // Ciemne tła
+                        brand: { DEFAULT: '#8b5cf6', hover: '#7c3aed', dark: '#6d28d9' }, 
+                        dark: { 900: '#0f0f11', 800: '#18181b', 700: '#27272a', 600: '#3f3f46' }
                     }
                 }
             }
@@ -29,9 +28,8 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, collection, getDocs, getDoc, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
-        // --- KONFIGURACJA ---
         const firebaseConfig = {
             apiKey: "AIzaSyAAYQapOciCUgy_o6I18i7oWH4VG7M7LCA",
             authDomain: "ub-tworcy-adrion.firebaseapp.com",
@@ -43,15 +41,14 @@
 
         const BOSS_EMAIL = "adrianniekil@gmail.com";
 
-        // --- INICJALIZACJA ---
-        let app, auth, db, mainDocRef;
+        let app, auth, db;
         try {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
         } catch (e) { console.error("Firebase Init Error", e); }
 
-        // --- DANE GLOBALNE ---
+        // --- DANE ---
         window.DEFAULT_DATA = {
             config: {
                 firstName: "ADRION", lastName: "",   
@@ -59,60 +56,42 @@
                 avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=1964&auto=format&fit=crop",
                 stats: { youtube: "0", instagram: "168", projects: "0" }
             },
-            posts: [{ id: 101, type: 'status', title: 'Start', text: 'Witaj na nowej stronie!', date: new Date().toISOString(), likes: 0, likedBy: [], comments: [] }],
+            posts: [{ id: 101, type: 'status', title: 'Start', text: 'Witaj na nowej stronie!', date: new Date().toISOString() }],
             products: []
         };
 
-        const CACHE_KEY = 'hub_data_v5';
-        let APP_DATA = JSON.parse(localStorage.getItem(CACHE_KEY) || JSON.stringify(window.DEFAULT_DATA));
-        if(!APP_DATA.users) APP_DATA.users = {};
-
+        // Lokalne bufory
+        let APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA));
+        let INTERACTIONS = {}; // Tutaj trzymamy lajki/komentarze na żywo
+        let USERS_CACHE = {};
+        
         let currentUser = null;
         let isAdmin = false;
         let uploadBuffer = '';
 
-        // --- SYNCHRONIZACJA (REAL-TIME) ---
+        // --- SYNCHRONIZACJA ---
         function startSync() {
             if(!db) return;
-            mainDocRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
 
-            onSnapshot(mainDocRef, (snap) => {
+            // 1. Główna treść (Posty, Sklep)
+            const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+            onSnapshot(mainRef, (snap) => {
                 document.getElementById('connection-dot').classList.replace('bg-red-500', 'bg-green-500');
                 if (snap.exists()) {
-                    // Zachowaj userów (bo są w innej kolekcji) a nadpisz content
-                    const users = APP_DATA.users;
-                    APP_DATA = { ...snap.data(), users: users };
+                    APP_DATA = { ...window.DEFAULT_DATA, ...snap.data() };
                     refreshView();
                 } else if (isAdmin) {
-                    setDoc(mainDocRef, window.DEFAULT_DATA).catch(()=>{});
+                    setDoc(mainRef, window.DEFAULT_DATA).catch(()=>{});
                 }
-            }, (err) => {
-                console.log("Sync info:", err.code); // Ignoruj błędy uprawnień w konsoli
             });
-        }
 
-        // --- AUTH LISTENER ---
-        if(auth) {
-            onAuthStateChanged(auth, async (user) => {
-                currentUser = user;
-                isAdmin = user && (user.email.toLowerCase() === BOSS_EMAIL.toLowerCase());
-                
-                updateNavState();
-                
-                if (user) {
-                    // Pobierz profil usera
-                    try {
-                        const uDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
-                        if(uDoc.exists()) APP_DATA.users[user.uid] = uDoc.data();
-                        else await saveMyProfile({ nick: user.email.split('@')[0], email: user.email });
-                    } catch(e) {
-                        // Fallback offline/błąd
-                        if(!APP_DATA.users[user.uid]) APP_DATA.users[user.uid] = { nick: "Ja", email: user.email };
-                    }
-                    // Pobierz innych userów w tle
-                    loadAllUsers();
-                }
-                refreshView();
+            // 2. Interakcje (Lajki, Komentarze) - Nasłuchujemy zmian w kolekcji
+            const metaRef = collection(db, 'projects', 'ub-tworcy-adrion', 'posts_meta');
+            onSnapshot(metaRef, (snap) => {
+                snap.forEach(doc => {
+                    INTERACTIONS[doc.id] = doc.data();
+                });
+                refreshView(); // Odśwież widok gdy ktoś zalajkuje
             });
         }
 
@@ -122,60 +101,84 @@
             reg: (e, p) => createUserWithEmailAndPassword(auth, e, p),
             out: () => signOut(auth),
             
+            // Zapisz konfigurację (tylko Admin)
             saveContent: async () => {
-                localStorage.setItem(CACHE_KEY, JSON.stringify(APP_DATA));
+                if(isAdmin) {
+                    const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
+                    await setDoc(mainRef, APP_DATA, { merge: true });
+                }
                 refreshView();
-                if(mainDocRef && isAdmin) await setDoc(mainDocRef, APP_DATA, { merge: true });
             },
-            
-            saveProfile: async (data) => saveMyProfile(data)
+
+            // Zapisz profil usera
+            saveProfile: async (data) => {
+                if(!currentUser) return;
+                USERS_CACHE[currentUser.uid] = { ...USERS_CACHE[currentUser.uid], ...data };
+                updateNavState();
+                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), data, { merge: true });
+            },
+
+            // Obsługa lajków (Atomowa - bezpieczna dla wielu userów naraz)
+            toggleLike: async (postId) => {
+                if(!currentUser) return openModal('auth');
+                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                
+                // Sprawdź lokalnie czy lajkujemy czy odlajkowujemy
+                const currentLikes = INTERACTIONS[postId]?.likes || [];
+                const isLiked = currentLikes.includes(currentUser.uid);
+
+                if(isLiked) {
+                    // Odlajkuj (ArrayRemove)
+                    await setDoc(postRef, { likes: arrayRemove(currentUser.uid) }, { merge: true });
+                } else {
+                    // Zalajkuj (ArrayUnion)
+                    await setDoc(postRef, { likes: arrayUnion(currentUser.uid) }, { merge: true });
+                }
+            },
+
+            // Obsługa komentarzy
+            addComment: async (postId, text) => {
+                if(!currentUser) return;
+                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                const comment = {
+                    id: Date.now(),
+                    uid: currentUser.uid,
+                    text: text,
+                    date: new Date().toISOString()
+                };
+                await setDoc(postRef, { comments: arrayUnion(comment) }, { merge: true });
+            },
+
+            deleteComment: async (postId, commentObject) => {
+                if(!isAdmin) return;
+                const postRef = doc(db, 'projects', 'ub-tworcy-adrion', 'posts_meta', String(postId));
+                await updateDoc(postRef, { comments: arrayRemove(commentObject) });
+            }
         };
 
-        async function saveMyProfile(data) {
-            if(!currentUser) return;
-            const uid = currentUser.uid;
-            const finalData = { ...APP_DATA.users[uid], ...data };
-            APP_DATA.users[uid] = finalData;
-            
-            // UI Update natychmiast
-            updateNavState();
-            refreshView();
-            
-            // Cloud Update
-            try {
-                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', uid), finalData, { merge: true });
-            } catch(e) { console.warn("Cloud save failed (rules?)"); }
-        }
-
-        async function loadAllUsers() {
-            try {
-                const snap = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
-                snap.forEach(d => APP_DATA.users[d.id] = d.data());
+        // --- AUTH ---
+        if(auth) {
+            onAuthStateChanged(auth, async (user) => {
+                currentUser = user;
+                isAdmin = user && (user.email.toLowerCase() === BOSS_EMAIL.toLowerCase());
+                
+                updateNavState();
+                
+                if (user) {
+                    // Pobierz mój profil
+                    const uDoc = await getDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', user.uid));
+                    if(uDoc.exists()) USERS_CACHE[user.uid] = uDoc.data();
+                    else window.api.saveProfile({ nick: user.email.split('@')[0], email: user.email }); // Auto-create
+                    
+                    // Pobierz innych (do wyświetlania w komentarzach)
+                    const allUsers = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
+                    allUsers.forEach(d => USERS_CACHE[d.id] = d.data());
+                }
                 refreshView();
-            } catch(e) {}
+            });
         }
 
-        // --- LOGIKA UI ---
-        
-        // 1. Nawigacja
-        window.switchTab = (tabId) => {
-            document.querySelectorAll('.view-section').forEach(el => {
-                el.classList.add('hidden');
-                el.classList.remove('animate-fade-in');
-            });
-            const active = document.getElementById('view-' + tabId);
-            active.classList.remove('hidden');
-            active.classList.add('animate-fade-in');
-            
-            // Scroll to top
-            window.scrollTo(0,0);
-            
-            // Active state w menu
-            document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('text-brand-DEFAULT'));
-            document.getElementById('btn-'+tabId)?.classList.add('text-brand-DEFAULT');
-        };
-
-        // 2. Renderowanie
+        // --- UI RENDER ---
         window.refreshView = () => {
             renderHeader();
             renderBlog();
@@ -183,40 +186,36 @@
             if(isAdmin) renderAdmin();
         };
 
-        function renderHeader() {
-            const c = APP_DATA.config;
-            document.getElementById('hero-name').innerText = c.firstName;
-            document.getElementById('hero-desc').innerText = c.bio;
-            document.getElementById('hero-avatar').src = c.avatarUrl;
-            document.getElementById('stat-yt').innerText = c.stats.youtube;
-            document.getElementById('stat-ig').innerText = c.stats.instagram;
-            document.getElementById('stat-proj').innerText = c.stats.projects;
-        }
-
         function renderBlog() {
             const list = document.getElementById('blog-list');
-            if(!APP_DATA.posts.length) { list.innerHTML = '<div class="text-gray-600 text-center py-10">Brak wpisów. Szefie, dodaj coś!</div>'; return; }
+            if(!APP_DATA.posts.length) { list.innerHTML = '<div class="text-gray-600 text-center py-10">Brak wpisów.</div>'; return; }
             
             list.innerHTML = APP_DATA.posts.map(p => {
-                const isLiked = (p.likedBy || []).includes(currentUser?.uid);
+                // Pobieramy interakcje z osobnej bazy
+                const meta = INTERACTIONS[p.id] || { likes: [], comments: [] };
+                const likes = meta.likes || [];
+                const comments = meta.comments || [];
+                const isLiked = currentUser && likes.includes(currentUser.uid);
                 
                 let media = '';
                 if(p.type === 'photo' && p.image) media = `<img src="${p.image}" class="w-full rounded-lg mb-4 shadow-lg">`;
-                if(p.type === 'video') media = `<div class="aspect-video bg-black rounded-lg mb-4 flex items-center justify-center cursor-pointer hover:bg-gray-900 transition" onclick="window.open('${p.videoUrl}', '_blank')"><i class="fas fa-play text-4xl text-white/80"></i></div>`;
+                if(p.type === 'video') media = `<div class="aspect-video bg-black rounded-lg mb-4 flex items-center justify-center cursor-pointer" onclick="window.open('${p.videoUrl}', '_blank')"><i class="fas fa-play text-4xl text-white/80"></i></div>`;
 
-                // Komentarze
-                const comments = (p.comments || []).map(c => {
-                    const u = APP_DATA.users[c.uid] || {};
-                    const nick = u.nick || c.author || 'Gość';
+                const commentsHTML = comments.map(c => {
+                    const u = USERS_CACHE[c.uid] || {};
+                    const nick = u.nick || 'Gość';
                     const av = u.avatar || `https://ui-avatars.com/api/?name=${nick}&background=random`;
+                    // Hack do usuwania: przekazujemy obiekt jako string JSON
+                    const cString = JSON.stringify(c).replace(/"/g, '&quot;');
+                    
                     return `
-                    <div class="flex gap-3 text-sm mb-3">
+                    <div class="flex gap-3 text-sm mb-3 group/comm">
                         <img src="${av}" class="w-8 h-8 rounded-full bg-dark-700 object-cover">
                         <div class="bg-dark-700 p-2 rounded-lg rounded-tl-none flex-1">
                             <span class="font-bold text-brand-DEFAULT text-xs block">${nick}</span>
-                            <span class="text-gray-300">${c.text}</span>
+                            <span class="text-gray-300 break-words">${c.text}</span>
                         </div>
-                        ${isAdmin ? `<button onclick="delComm(${p.id}, '${c.text}')" class="text-red-500 hover:text-red-400 self-center"><i class="fas fa-times"></i></button>` : ''}
+                        ${isAdmin ? `<button onclick="deleteComment(${p.id}, ${cString})" class="text-red-500 opacity-0 group-hover/comm:opacity-100 transition"><i class="fas fa-times"></i></button>` : ''}
                     </div>`;
                 }).join('');
 
@@ -226,22 +225,20 @@
                     
                     <h2 class="text-2xl font-bold mb-2 text-white">${p.title}</h2>
                     <p class="text-gray-400 text-sm mb-4">${new Date(p.date).toLocaleDateString()}</p>
-                    
                     ${media}
-                    
                     <p class="text-gray-300 leading-relaxed mb-6">${p.text}</p>
                     
                     <div class="flex items-center gap-4 border-t border-dark-700 pt-4">
-                        <button onclick="toggleLike(${p.id})" class="flex items-center gap-2 px-4 py-2 rounded-full bg-dark-700 hover:bg-dark-600 transition ${isLiked ? 'text-red-500' : 'text-gray-400'}">
-                            <i class="${isLiked ? 'fas' : 'far'} fa-heart"></i> <span>${p.likes || 0}</span>
+                        <button onclick="window.api.toggleLike(${p.id})" class="flex items-center gap-2 px-4 py-2 rounded-full bg-dark-700 hover:bg-dark-600 transition ${isLiked ? 'text-red-500' : 'text-gray-400'}">
+                            <i class="${isLiked ? 'fas' : 'far'} fa-heart"></i> <span>${likes.length}</span>
                         </button>
                         <button onclick="document.getElementById('c-box-${p.id}').classList.toggle('hidden')" class="flex items-center gap-2 px-4 py-2 rounded-full bg-dark-700 hover:bg-dark-600 transition text-gray-400">
-                            <i class="far fa-comment"></i> <span>${p.comments?.length || 0}</span>
+                            <i class="far fa-comment"></i> <span>${comments.length}</span>
                         </button>
                     </div>
 
                     <div id="c-box-${p.id}" class="hidden mt-4 pt-4 border-t border-dark-700 animate-fade-in">
-                        <div class="max-h-60 overflow-y-auto mb-4 pr-2 space-y-2 custom-scroll">${comments}</div>
+                        <div class="max-h-60 overflow-y-auto mb-4 pr-2 space-y-2 custom-scroll">${commentsHTML}</div>
                         ${currentUser ? `
                         <div class="flex gap-2">
                             <input id="in-c-${p.id}" type="text" placeholder="Napisz komentarz..." class="w-full bg-dark-900 border border-dark-600 rounded-lg px-4 py-2 text-white focus:border-brand-DEFAULT outline-none">
@@ -252,150 +249,79 @@
             }).join('');
         }
 
+        // --- HELPERY UI ---
+        function renderHeader() {
+            const c = APP_DATA.config;
+            document.getElementById('hero-name').innerText = c.firstName;
+            document.getElementById('hero-desc').innerText = c.bio;
+            document.getElementById('hero-avatar').src = c.avatarUrl;
+            document.getElementById('stat-yt').innerText = c.stats.youtube;
+            document.getElementById('stat-ig').innerText = c.stats.instagram;
+            document.getElementById('stat-proj').innerText = c.stats.projects;
+        }
         function renderShop() {
             const list = document.getElementById('shop-list');
             if(!APP_DATA.products.length) { list.innerHTML = '<div class="col-span-full text-center text-gray-600 py-10">Sklep wkrótce...</div>'; return; }
-            
             list.innerHTML = APP_DATA.products.map(p => `
-                <div class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative hover:border-brand-DEFAULT transition duration-300">
-                    ${isAdmin ? `<button onclick="delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110 transition"><i class="fas fa-trash"></i></button>` : ''}
-                    <div class="aspect-square overflow-hidden bg-dark-900">
-                        <img src="${p.img}" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
-                    </div>
-                    <div class="p-4">
-                        <h3 class="font-bold text-white mb-1 truncate">${p.name}</h3>
-                        <div class="flex justify-between items-center mt-3">
-                            <span class="text-brand-DEFAULT font-bold">${p.price} PLN</span>
-                            <button class="bg-white text-black px-3 py-1 rounded-lg text-xs font-bold hover:bg-gray-200 transition">DO KOSZYKA</button>
-                        </div>
-                    </div>
-                </div>
-            `).join('');
+                <div class="bg-dark-800 rounded-2xl overflow-hidden border border-dark-700 shadow-lg group relative">
+                    ${isAdmin ? `<button onclick="delProd(${p.id})" class="absolute top-2 right-2 z-10 bg-red-500 text-white w-8 h-8 rounded-full flex items-center justify-center hover:scale-110"><i class="fas fa-trash"></i></button>` : ''}
+                    <div class="aspect-square overflow-hidden bg-dark-900"><img src="${p.img}" class="w-full h-full object-cover"></div>
+                    <div class="p-4"><h3 class="font-bold text-white mb-1 truncate">${p.name}</h3><span class="text-brand-DEFAULT font-bold">${p.price} PLN</span></div>
+                </div>`).join('');
         }
-
         function renderAdmin() {
             const list = document.getElementById('admin-users-table');
-            const users = Object.entries(APP_DATA.users || {});
+            const users = Object.values(USERS_CACHE);
             document.getElementById('admin-user-count').innerText = users.length;
-            
-            list.innerHTML = users.map(([uid, u]) => `
-                <tr class="border-b border-dark-700 hover:bg-dark-700/50 transition">
-                    <td class="p-3 font-bold text-white">${u.nick || '---'}</td>
-                    <td class="p-3 text-gray-400 text-sm">${u.email}</td>
-                    <td class="p-3"><span class="bg-dark-600 px-2 py-1 rounded text-xs">${u.role || 'user'}</span></td>
-                </tr>
-            `).join('');
+            list.innerHTML = users.map(u => `<tr class="border-b border-dark-700 hover:bg-dark-700/50"><td class="p-3 font-bold text-white">${u.nick}</td><td class="p-3 text-gray-400 text-sm">${u.email}</td><td class="p-3 text-xs">${u.role||'user'}</td></tr>`).join('');
         }
 
-        // --- AKCJE LOGIKI (POSTY, KOMENTARZE, ADMIN) ---
-        window.toggleLike = (id) => {
-            if(!currentUser) return openModal('auth');
-            const p = APP_DATA.posts.find(x => x.id === id);
-            if(!p.likedBy) p.likedBy = [];
-            const uid = currentUser.uid;
-            
-            if(p.likedBy.includes(uid)) {
-                p.likedBy = p.likedBy.filter(x => x !== uid);
-                p.likes--;
-            } else {
-                p.likedBy.push(uid);
-                p.likes++;
-            }
-            window.api.saveContent();
-        };
-
+        // --- BUTTON ACTIONS ---
         window.addComm = (id) => {
             const inp = document.getElementById('in-c-'+id);
             if(!inp.value.trim()) return;
-            const p = APP_DATA.posts.find(x => x.id === id);
-            if(!p.comments) p.comments = [];
-            
-            p.comments.push({ uid: currentUser.uid, text: inp.value.trim(), date: new Date().toISOString() });
-            window.api.saveContent();
+            window.api.addComment(id, inp.value.trim());
             inp.value = '';
         };
-
-        // ADMIN FUNCTIONS
+        window.deleteComment = (pid, cObj) => window.api.deleteComment(pid, cObj);
+        
         window.addPost = () => {
             const t = document.getElementById('add-p-title').value;
             if(!t) return alert("Podaj tytuł");
             APP_DATA.posts.unshift({
-                id: Date.now(),
-                title: t,
-                text: document.getElementById('add-p-text').value,
-                type: document.getElementById('add-p-type').value,
-                image: uploadBuffer,
-                videoUrl: document.getElementById('add-p-video').value,
-                date: new Date().toISOString(),
-                likes: 0, likedBy: [], comments: []
+                id: Date.now(), title: t, text: document.getElementById('add-p-text').value,
+                type: document.getElementById('add-p-type').value, image: uploadBuffer,
+                videoUrl: document.getElementById('add-p-video').value, date: new Date().toISOString()
             });
             window.api.saveContent();
-            uploadBuffer = '';
-            document.getElementById('add-p-title').value = '';
-            document.getElementById('add-p-file-label').innerText = 'Wybierz plik';
-            alert("Dodano!");
+            uploadBuffer = ''; alert("Dodano!");
         };
-
         window.addProd = () => {
             const n = document.getElementById('add-shop-name').value;
             if(!n) return;
             APP_DATA.products.push({
-                id: Date.now(),
-                name: n,
-                price: document.getElementById('add-shop-price').value,
+                id: Date.now(), name: n, price: document.getElementById('add-shop-price').value,
                 img: uploadBuffer || 'https://via.placeholder.com/300'
             });
             window.api.saveContent();
-            uploadBuffer = '';
-            alert("Produkt dodany!");
+            uploadBuffer = ''; alert("Produkt dodany!");
         };
-
         window.delPost = (id) => { if(confirm('Usunąć?')) { APP_DATA.posts = APP_DATA.posts.filter(x => x.id !== id); window.api.saveContent(); } };
         window.delProd = (id) => { if(confirm('Usunąć?')) { APP_DATA.products = APP_DATA.products.filter(x => x.id !== id); window.api.saveContent(); } };
-        window.delComm = (pid, txt) => { 
-            const p = APP_DATA.posts.find(x => x.id === pid);
-            p.comments = p.comments.filter(c => c.text !== txt);
-            window.api.saveContent();
-        };
 
-        // --- OBSŁUGA PLIKÓW ---
-        window.handleFile = (e, labelId) => {
-            const f = e.target.files[0];
-            if(!f) return;
-            const r = new FileReader();
-            r.onload = (ev) => {
-                const img = new Image();
-                img.onload = () => {
-                    const c = document.createElement('canvas');
-                    const ctx = c.getContext('2d');
-                    const s = Math.min(1000/img.width, 1);
-                    c.width = img.width * s; c.height = img.height * s;
-                    ctx.drawImage(img,0,0,c.width,c.height);
-                    uploadBuffer = c.toDataURL('image/jpeg', 0.8);
-                    if(labelId) document.getElementById(labelId).innerText = "Gotowe!";
-                };
-                img.src = ev.target.result;
-            };
-            r.readAsDataURL(f);
-        };
-
-        // --- UI HELPERS ---
+        // --- SYSTEMOWE ---
         function updateNavState() {
             if(currentUser) {
                 document.getElementById('nav-auth-btn').classList.add('hidden');
                 document.getElementById('nav-user-profile').classList.remove('hidden');
-                
-                const u = APP_DATA.users[currentUser.uid] || {};
+                const u = USERS_CACHE[currentUser.uid] || {};
                 const av = u.avatar || `https://ui-avatars.com/api/?name=${currentUser.email}&background=8b5cf6&color=fff`;
                 document.getElementById('user-av-small').src = av;
                 document.getElementById('menu-av-large').src = av;
                 document.getElementById('menu-email').innerText = currentUser.email;
                 document.getElementById('menu-nick').innerText = u.nick || 'User';
-                
                 document.getElementById('menu-admin-badge').classList.toggle('hidden', !isAdmin);
                 document.getElementById('btn-admin').classList.toggle('hidden', !isAdmin);
-                
-                // Wypełnij pola edycji w menu
                 document.getElementById('edit-nick').value = u.nick || '';
                 document.getElementById('edit-av-url').value = u.avatar || '';
             } else {
@@ -404,49 +330,39 @@
                 document.getElementById('btn-admin').classList.add('hidden');
             }
         }
-
+        window.switchTab = (id) => {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
+            document.getElementById('view-'+id).classList.remove('hidden');
+            window.scrollTo(0,0);
+        };
+        window.handleFile = (e, lid) => {
+            const f = e.target.files[0];
+            if(!f) return;
+            const r = new FileReader();
+            r.onload = (ev) => {
+                const i = new Image(); i.onload = () => {
+                    const c = document.createElement('canvas'); const x = c.getContext('2d');
+                    const s = Math.min(1000/i.width, 1); c.width = i.width*s; c.height = i.height*s;
+                    x.drawImage(i,0,0,c.width,c.height); uploadBuffer = c.toDataURL('image/jpeg', 0.8);
+                    if(lid) document.getElementById(lid).innerText = "Gotowe!";
+                }; i.src = ev.target.result;
+            }; r.readAsDataURL(f);
+        };
         window.openModal = (id) => document.getElementById('modal-'+id).classList.remove('hidden');
         window.closeModal = (id) => document.getElementById('modal-'+id).classList.add('hidden');
-        
-        window.doLogin = async () => {
-            try { await window.api.login(document.getElementById('l-email').value, document.getElementById('l-pass').value); window.closeModal('auth'); }
-            catch(e) { alert("Błąd: " + e.message); }
-        };
-        
-        window.doReg = async () => {
-            try { 
-                const c = await window.api.reg(document.getElementById('r-email').value, document.getElementById('r-pass').value);
-                await window.api.saveProfile({ nick: document.getElementById('r-nick').value, email: c.user.email });
-                window.closeModal('auth');
-            } catch(e) { alert("Błąd: " + e.message); }
-        };
-
+        window.doLogin = async () => { try { await window.api.login(document.getElementById('l-email').value, document.getElementById('l-pass').value); window.closeModal('auth'); } catch(e) { alert(e.message); } };
+        window.doReg = async () => { try { const c = await window.api.reg(document.getElementById('r-email').value, document.getElementById('r-pass').value); await window.api.saveProfile({ nick: document.getElementById('r-nick').value, email: c.user.email }); window.closeModal('auth'); } catch(e) { alert(e.message); } };
         window.saveProfile = async () => {
             const nick = document.getElementById('edit-nick').value;
             const av = uploadBuffer || document.getElementById('edit-av-url').value;
             const pass = document.getElementById('edit-pass').value;
-            
             if(pass) { try { await window.api.updatePass(pass); alert("Hasło zmienione!"); } catch(e) { return alert(e.message); } }
-            
-            const data = { nick: nick };
-            if(av) data.avatar = av;
-            
-            await window.api.saveProfile(data);
-            uploadBuffer = '';
-            document.getElementById('user-menu').classList.add('translate-x-full'); // Zamknij menu
+            await window.api.saveProfile({ nick, ...(av && {avatar: av}) });
+            uploadBuffer = ''; document.getElementById('user-menu').classList.add('translate-x-full');
         };
+        window.toggleUserMenu = () => document.getElementById('user-menu').classList.toggle('translate-x-full');
 
-        window.toggleUserMenu = () => {
-            const m = document.getElementById('user-menu');
-            m.classList.toggle('translate-x-full');
-        };
-
-        // Start
-        window.addEventListener('load', () => {
-            startSync();
-            switchTab('feed');
-        });
-
+        window.addEventListener('load', () => { startSync(); switchTab('feed'); });
     </script>
 
     <style>
@@ -456,41 +372,29 @@
         .custom-scroll::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
         .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        /* Ukrywanie scrollbara w inputach file */
         input[type="file"]::file-selector-button { @apply bg-dark-700 text-white border-0 py-2 px-4 rounded mr-2 cursor-pointer hover:bg-dark-600 transition; }
     </style>
 </head>
 <body class="overflow-x-hidden">
 
-    <!-- STATUS CHMURY -->
     <div class="fixed bottom-4 left-4 z-50 flex items-center gap-2 opacity-50 hover:opacity-100 transition">
         <div id="connection-dot" class="w-2 h-2 rounded-full bg-red-500"></div>
         <span class="text-[10px] text-gray-500 uppercase tracking-widest">Server</span>
     </div>
 
-    <!-- NAVBAR -->
     <nav class="fixed top-0 w-full bg-dark-900/90 backdrop-blur-md border-b border-dark-700 z-40 h-16">
         <div class="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
-            <!-- LOGO -->
             <div class="font-bold text-2xl tracking-tighter cursor-pointer select-none" onclick="switchTab('feed')">
                 HUB<span class="text-brand-DEFAULT">.</span>
             </div>
-
-            <!-- MENU ŚRODEK -->
             <div class="hidden md:flex gap-8 text-sm font-bold text-gray-400">
                 <button id="btn-feed" onclick="switchTab('feed')" class="nav-btn hover:text-white transition">VLOG</button>
                 <button id="btn-shop" onclick="switchTab('shop')" class="nav-btn hover:text-white transition">SKLEP</button>
                 <button id="btn-about" onclick="switchTab('about')" class="nav-btn hover:text-white transition">O MNIE</button>
                 <button id="btn-admin" onclick="switchTab('admin')" class="nav-btn hidden text-red-500 hover:text-red-400 transition flex items-center gap-2"><i class="fas fa-lock"></i> PANEL</button>
             </div>
-
-            <!-- MENU PRAWE -->
             <div class="flex items-center gap-4">
-                <!-- GUEST -->
-                <button id="nav-auth-btn" onclick="openModal('auth')" class="bg-white text-black px-5 py-2 rounded-full text-xs font-bold hover:bg-gray-200 transition">
-                    ZALOGUJ
-                </button>
-                <!-- LOGGED -->
+                <button id="nav-auth-btn" onclick="openModal('auth')" class="bg-white text-black px-5 py-2 rounded-full text-xs font-bold hover:bg-gray-200 transition">ZALOGUJ</button>
                 <div id="nav-user-profile" class="hidden cursor-pointer relative group" onclick="toggleUserMenu()">
                     <img id="user-av-small" src="" class="w-9 h-9 rounded-full bg-dark-700 object-cover border border-dark-600 group-hover:border-brand-DEFAULT transition">
                 </div>
@@ -498,12 +402,8 @@
         </div>
     </nav>
 
-    <!-- CONTENT -->
     <main class="pt-20 pb-20 px-4 max-w-5xl mx-auto min-h-screen">
-
-        <!-- VIEW: VLOG / FEED -->
         <div id="view-feed" class="view-section animate-fade-in">
-            <!-- HEADER PROFILOWY -->
             <div class="flex flex-col md:flex-row gap-8 items-center md:items-start mb-16 mt-8">
                 <div class="relative">
                     <div class="absolute inset-0 bg-brand-DEFAULT blur-2xl opacity-20 rounded-full"></div>
@@ -512,7 +412,6 @@
                 <div class="flex-1 text-center md:text-left">
                     <h1 id="hero-name" class="text-4xl md:text-6xl font-black mb-4 tracking-tight text-white">...</h1>
                     <p id="hero-desc" class="text-gray-400 text-lg max-w-xl leading-relaxed">...</p>
-                    
                     <div class="flex gap-8 justify-center md:justify-start mt-8">
                         <div class="text-center"><div id="stat-yt" class="text-2xl font-bold text-white">-</div><div class="text-xs text-gray-500 font-bold tracking-widest">YOUTUBE</div></div>
                         <div class="text-center"><div id="stat-ig" class="text-2xl font-bold text-white">-</div><div class="text-xs text-gray-500 font-bold tracking-widest">INSTA</div></div>
@@ -520,64 +419,42 @@
                     </div>
                 </div>
             </div>
-
-            <div id="blog-list" class="max-w-2xl mx-auto">
-                <!-- Posty tu trafią -->
-            </div>
+            <div id="blog-list" class="max-w-2xl mx-auto"></div>
         </div>
 
-        <!-- VIEW: SKLEP -->
         <div id="view-shop" class="view-section hidden">
             <h2 class="text-4xl font-black mb-10 text-center">LIMITOWANY <span class="text-brand-DEFAULT">DROP</span></h2>
             <div id="shop-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
         </div>
 
-        <!-- VIEW: O MNIE -->
         <div id="view-about" class="view-section hidden">
             <div class="bg-dark-800 p-8 rounded-3xl border border-dark-700 max-w-3xl mx-auto text-center">
                 <h2 class="text-3xl font-bold mb-6">Moja Historia</h2>
-                <p class="text-gray-300 leading-loose">
-                    Tutaj możesz napisać dłuższą historię o sobie. O tym jak zacząłeś, co Cię motywuje i dokąd zmierzasz. 
-                    Ten tekst jest statyczny, ale możesz go łatwo zmienić w kodzie HTML w sekcji "DEFAULT_DATA".
-                </p>
-                <div class="mt-8 flex justify-center gap-4">
-                    <a href="#" class="text-2xl text-gray-400 hover:text-white transition"><i class="fab fa-instagram"></i></a>
-                    <a href="#" class="text-2xl text-gray-400 hover:text-white transition"><i class="fab fa-youtube"></i></a>
-                </div>
+                <p class="text-gray-300 leading-loose">Tutaj możesz napisać dłuższą historię o sobie.</p>
             </div>
         </div>
 
-        <!-- VIEW: ADMIN PANEL -->
         <div id="view-admin" class="view-section hidden">
             <h2 class="text-3xl font-black mb-8 border-b border-dark-700 pb-4 text-red-500">CENTRUM DOWODZENIA</h2>
-            
             <div class="grid lg:grid-cols-2 gap-8">
-                <!-- NOWY POST -->
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700">
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj Wpis</h3>
                     <input id="add-p-title" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white focus:border-brand-DEFAULT outline-none" placeholder="Tytuł posta">
                     <textarea id="add-p-text" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white h-24 resize-none focus:border-brand-DEFAULT outline-none" placeholder="Co tam słychać?"></textarea>
-                    
                     <div class="flex gap-2 mb-3">
                         <select id="add-p-type" class="bg-dark-900 border border-dark-600 rounded-lg px-3 text-sm text-gray-300">
                             <option value="status">Tekst</option>
                             <option value="photo">Zdjęcie</option>
                             <option value="video">Video</option>
                         </select>
-                        <input id="add-p-video" class="flex-1 bg-dark-900 border border-dark-600 p-2 rounded-lg text-sm text-white" placeholder="Link do YouTube (dla wideo)">
+                        <input id="add-p-video" class="flex-1 bg-dark-900 border border-dark-600 p-2 rounded-lg text-sm text-white" placeholder="Link do YouTube">
                     </div>
-                    
                     <div class="flex items-center gap-3 mb-4">
                         <input type="file" id="add-p-file" class="hidden" onchange="handleFile(event, 'add-p-file-label')">
-                        <label for="add-p-file" id="add-p-file-label" class="cursor-pointer bg-dark-700 px-4 py-2 rounded-lg text-xs font-bold hover:bg-dark-600 transition text-gray-300">
-                            <i class="fas fa-camera mr-2"></i> Wybierz fotę
-                        </label>
+                        <label for="add-p-file" id="add-p-file-label" class="cursor-pointer bg-dark-700 px-4 py-2 rounded-lg text-xs font-bold hover:bg-dark-600 transition text-gray-300"><i class="fas fa-camera mr-2"></i> Wybierz fotę</label>
                     </div>
-
                     <button onclick="addPost()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-3 rounded-xl transition shadow-lg shadow-brand-DEFAULT/20">OPUBLIKUJ</button>
                 </div>
-
-                <!-- NOWY PRODUKT -->
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 h-fit">
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj do Sklepu</h3>
                     <input id="add-shop-name" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white" placeholder="Nazwa produktu">
@@ -589,75 +466,49 @@
                     </div>
                     <button onclick="addProd()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition">DODAJ PRODUKT</button>
                 </div>
-
-                <!-- UŻYTKOWNICY -->
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 lg:col-span-2">
                     <h3 class="font-bold text-xl mb-4 text-white">Baza Użytkowników (<span id="admin-user-count">0</span>)</h3>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-sm">
-                            <thead class="text-gray-500 uppercase text-xs border-b border-dark-700">
-                                <tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th></tr>
-                            </thead>
+                            <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th></tr></thead>
                             <tbody id="admin-users-table"></tbody>
                         </table>
                     </div>
                 </div>
             </div>
         </div>
-
     </main>
 
-    <!-- SIDEBAR USER MENU (PRAWY PANEL) -->
     <div id="user-menu" class="fixed top-0 right-0 h-full w-80 bg-dark-800 border-l border-dark-700 shadow-2xl transform translate-x-full transition-transform duration-300 z-50 p-6 flex flex-col">
         <button onclick="toggleUserMenu()" class="absolute top-4 left-4 text-gray-400 hover:text-white"><i class="fas fa-times text-xl"></i></button>
-        
         <div class="mt-8 text-center">
             <img id="menu-av-large" src="" class="w-24 h-24 rounded-full mx-auto mb-4 border-2 border-dark-600 object-cover">
             <h3 id="menu-nick" class="text-xl font-bold text-white">User</h3>
             <p id="menu-email" class="text-sm text-gray-500 mb-2">...</p>
             <span id="menu-admin-badge" class="hidden bg-red-500/20 text-red-500 text-xs font-bold px-2 py-1 rounded">ADMIN</span>
         </div>
-
         <div class="mt-8 space-y-4 flex-1 overflow-y-auto">
-            <div class="space-y-2">
-                <label class="text-xs font-bold text-gray-500 uppercase">Zmień Nick</label>
-                <input id="edit-nick" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm">
-            </div>
-            <div class="space-y-2">
-                <label class="text-xs font-bold text-gray-500 uppercase">Avatar (Link lub Plik)</label>
-                <input id="edit-av-url" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm mb-1" placeholder="https://...">
-                <input type="file" onchange="handleFile(event)" class="text-xs text-gray-500 w-full">
-            </div>
-            <div class="space-y-2">
-                <label class="text-xs font-bold text-gray-500 uppercase">Nowe Hasło</label>
-                <input id="edit-pass" type="password" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm" placeholder="Opcjonalne">
-            </div>
+            <div class="space-y-2"><label class="text-xs font-bold text-gray-500 uppercase">Zmień Nick</label><input id="edit-nick" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm"></div>
+            <div class="space-y-2"><label class="text-xs font-bold text-gray-500 uppercase">Avatar (Link lub Plik)</label><input id="edit-av-url" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm mb-1" placeholder="https://..."><input type="file" onchange="handleFile(event)" class="text-xs text-gray-500 w-full"></div>
+            <div class="space-y-2"><label class="text-xs font-bold text-gray-500 uppercase">Nowe Hasło</label><input id="edit-pass" type="password" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm" placeholder="Opcjonalne"></div>
             <button onclick="saveProfile()" class="w-full bg-dark-700 hover:bg-brand-DEFAULT text-white font-bold py-2 rounded transition">ZAPISZ ZMIANY</button>
         </div>
-
         <button onclick="window.api.out(); toggleUserMenu()" class="mt-auto w-full border border-red-500/30 text-red-500 hover:bg-red-500 hover:text-white font-bold py-3 rounded transition">WYLOGUJ</button>
     </div>
 
-    <!-- MODAL AUTH -->
     <div id="modal-auth" class="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center hidden backdrop-blur-sm p-4">
         <div class="bg-dark-800 w-full max-w-sm rounded-2xl border border-dark-600 p-8 relative">
             <button onclick="closeModal('auth')" class="absolute top-4 right-4 text-gray-500 hover:text-white"><i class="fas fa-times"></i></button>
             <h2 class="text-2xl font-bold text-center mb-6 text-white">Dołącz do nas</h2>
-            
-            <!-- TABS -->
             <div class="flex mb-6 border-b border-dark-700">
                 <button onclick="document.getElementById('form-l').classList.remove('hidden');document.getElementById('form-r').classList.add('hidden');" class="flex-1 pb-2 text-brand-DEFAULT font-bold border-b-2 border-brand-DEFAULT">Logowanie</button>
                 <button onclick="document.getElementById('form-r').classList.remove('hidden');document.getElementById('form-l').classList.add('hidden');" class="flex-1 pb-2 text-gray-500 hover:text-white transition">Rejestracja</button>
             </div>
-
-            <!-- LOGIN -->
             <div id="form-l" class="space-y-3">
                 <input id="l-email" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Email">
                 <input id="l-pass" type="password" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Hasło">
                 <button onclick="doLogin()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-3 rounded-lg transition mt-2">ZALOGUJ</button>
             </div>
-
-            <!-- REGISTER -->
             <div id="form-r" class="space-y-3 hidden">
                 <input id="r-nick" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Twój Nick">
                 <input id="r-email" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white" placeholder="Email">
