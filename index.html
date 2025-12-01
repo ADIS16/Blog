@@ -12,7 +12,7 @@
     <!-- FIREBASE SDK (Wersja stabilna 10.13.2) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword, updateProfile } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
         // --- KONFIGURACJA FIREBASE ---
@@ -58,19 +58,17 @@
                 if (snapshot.exists()) {
                     window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: snapshot.data() }));
                 } else {
-                    console.log("Baza pusta. Próba inicjalizacji (tylko Admin)...");
-                    // Tylko admin będzie mógł to zrobić
+                    console.log("Baza pusta. Próba inicjalizacji...");
+                    // Jeśli baza jest pusta, próbujemy ją utworzyć.
+                    // Zadziała to tylko jeśli jesteś adminem (zgodnie z Rules).
                     if(window.DEFAULT_DATA_TEMPLATE) setDoc(docRef, window.DEFAULT_DATA_TEMPLATE)
-                        .catch(err => console.log("Czekam na dane (Brak uprawnień do utworzenia bazy)."));
+                        .catch(err => console.log("Czekam na dane (Brak uprawnień do zapisu bazy)."));
                 }
             }, (error) => {
                 console.error("Firebase Error:", error);
                 const statusEl = document.getElementById('cloud-status-text');
                 
                 if (error.code === 'permission-denied') {
-                    // To normalne przy restrykcyjnych zasadach - user widzi dane, ale onSnapshot może rzucić błąd
-                    // jeśli próbuje nasłuchiwać zmian, których nie widzi.
-                    // Tutaj zakładamy "Read: true", więc błędu nie powinno być przy odczycie.
                     if(statusEl) { statusEl.innerText = "Tylko Odczyt"; statusEl.style.color = "orange"; }
                 } else if (error.code === 'auth/api-key-not-valid' || error.message.includes('api-key')) {
                     showRepairModal("Błędny API KEY w kodzie strony!");
@@ -92,17 +90,17 @@
                 if(!auth.currentUser) return false;
                 try {
                     // Próbujemy zapisać nieszkodliwą flagę timestamp
-                    // Jeśli reguły w Firebase (gdzie jest Twój mail) pozwolą -> Jesteś Adminem
-                    await updateDoc(docRef, { _lastAdminCheck: Date.now() });
+                    // Używamy setDoc z merge, żeby zadziałało nawet jak dokument nie istnieje
+                    await setDoc(docRef, { _lastAdminCheck: Date.now() }, { merge: true });
                     return true;
                 } catch(e) {
                     // Jeśli błąd "permission-denied" -> Nie jesteś Adminem
+                    console.warn("Check Admin failed:", e.code);
                     return false;
                 }
             },
             save: async (newData) => {
                 if (!docRef) return;
-                // Optymistyczna aktualizacja lokalna
                 window.dispatchEvent(new CustomEvent('cloudDataUpdated', { detail: newData }));
                 try { 
                     await setDoc(docRef, newData, { merge: true }); 
@@ -122,6 +120,7 @@
             },
             register: async (email, pass) => createUserWithEmailAndPassword(auth, email, pass),
             logout: async () => signOut(auth),
+            updateUserPass: async (newPass) => updatePassword(auth.currentUser, newPass),
             onAuth: (cb) => { if(auth) onAuthStateChanged(auth, cb); }
         };
 
@@ -352,11 +351,11 @@
         </div>
     </main>
 
-    <!-- AUTH MODAL -->
+    <!-- AUTH MODAL (PANEL UŻYTKOWNIKA) -->
     <div id="auth-modal" class="fixed inset-0 z-[100] bg-black/80 hidden flex items-center justify-center backdrop-blur-sm px-4">
-        <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm relative">
+        <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm relative max-h-[90vh] overflow-y-auto">
             <button onclick="closeAuthModal()" class="absolute top-4 right-4 text-gray-400 hover:text-black"><i class="fas fa-times text-xl"></i></button>
-            <div class="flex border-b border-gray-100 mb-6">
+            <div id="auth-tabs" class="flex border-b border-gray-100 mb-6">
                 <button onclick="switchAuthTab('login')" id="tab-login" class="flex-1 pb-3 text-brand-purple border-b-2 border-brand-purple font-bold">Logowanie</button>
                 <button onclick="switchAuthTab('register')" id="tab-register" class="flex-1 pb-3 text-gray-400 hover:text-black">Rejestracja</button>
             </div>
@@ -374,11 +373,46 @@
                 <button onclick="handleRegister()" id="btn-reg-action" class="w-full bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-800 transition-colors shadow-lg">ZAŁÓŻ KONTO</button>
             </div>
             
+            <!-- PANEL PROFILU -->
             <div id="user-profile-view" class="hidden text-center">
-                <div class="w-24 h-24 bg-gradient-to-br from-brand-purple to-brand-pink rounded-full flex items-center justify-center mx-auto mb-4 text-4xl font-bold text-white shadow-lg"><span id="user-initial">U</span></div>
+                <div class="relative w-24 h-24 mx-auto mb-4">
+                    <img id="user-avatar-img" class="w-full h-full rounded-full object-cover shadow-lg bg-gray-200" src="" onerror="this.src='https://ui-avatars.com/api/?name=U&background=8b5cf6&color=fff'">
+                </div>
                 <h3 id="user-display-name" class="text-2xl font-bold mb-1 text-black">User</h3>
-                <p id="user-email-display" class="text-gray-500 text-sm mb-8"></p>
-                <button onclick="handleLogout()" class="w-full border-2 border-red-100 text-red-500 font-bold py-3 rounded-xl hover:bg-red-50 transition-colors">WYLOGUJ</button>
+                <p id="user-email-display" class="text-gray-500 text-sm mb-4"></p>
+                <div id="admin-badge" class="hidden mb-4"><span class="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded">ADMIN</span></div>
+
+                <button onclick="handleLogout()" class="w-full border-2 border-red-100 text-red-500 font-bold py-2 rounded-xl hover:bg-red-50 transition-colors mb-2 text-sm">WYLOGUJ</button>
+                
+                <div class="mt-4 border-t border-gray-100 pt-4">
+                    <button onclick="document.getElementById('profile-settings').classList.toggle('hidden')" class="text-brand-purple text-sm font-bold flex items-center justify-center gap-2 hover:underline">
+                        <i class="fas fa-cog"></i> Ustawienia Profilu / Hasło
+                    </button>
+                    
+                    <div id="profile-settings" class="hidden mt-4 text-left space-y-3">
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Zmień Nick</label>
+                            <input id="edit-nick" type="text" class="w-full bg-gray-50 border border-gray-200 p-2 rounded text-sm text-black">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Avatar (Link URL)</label>
+                            <input id="edit-avatar" type="text" placeholder="https://..." class="w-full bg-gray-50 border border-gray-200 p-2 rounded text-sm text-black">
+                            <p class="text-[10px] text-gray-400 mt-1">Lub wgraj plik (opcjonalnie):</p>
+                            <input type="file" id="edit-avatar-file" class="text-xs text-gray-500 w-full" onchange="handleAvatarFile(event)">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Zmień Hasło</label>
+                            <input id="edit-password" type="password" placeholder="Nowe hasło" class="w-full bg-gray-50 border border-gray-200 p-2 rounded text-sm text-black">
+                        </div>
+                        <button onclick="handleUpdateProfile()" class="w-full bg-gray-800 text-white font-bold py-2 rounded-lg text-sm mt-2 hover:bg-black transition-colors">ZAPISZ ZMIANY</button>
+                    </div>
+                </div>
+
+                <div class="mt-4 pt-2 border-t border-gray-100">
+                    <button onclick="window.cloudAPI.checkAdminPermissions().then(isAdmin => { if(isAdmin) { location.reload(); } else { showToast('Brak uprawnień Admina', 'error'); } })" class="text-xs text-gray-400 underline hover:text-gray-600">
+                        Odśwież uprawnienia (Admin Check)
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -437,6 +471,7 @@
         let currentUserRole = 'guest';
         let currentPostImageBase64 = '';
         let currentProductImageBase64 = '';
+        let currentAvatarBase64 = '';
         let cart = []; 
 
         function updateAppData(newData) {
@@ -458,13 +493,16 @@
             window.cloudAPI.onAuth(async (user) => {
                 currentUser = user;
                 if(user) {
-                    // Magia: Sprawdzamy czy mamy prawo zapisu
+                    // Automatyczne sprawdzenie admina przy logowaniu
                     const isAdmin = await window.cloudAPI.checkAdminPermissions();
                     if(isAdmin) {
                         currentUserRole = 'admin';
-                        // Jeśli jesteśmy adminem, a nie ma nas w userRoles, dopisujemy się
+                        console.log("Witaj Szefie!");
+                        // Zapisz/Odśwież rolę w bazie
                         if(!APP_DATA.userRoles[user.email] || APP_DATA.userRoles[user.email].role !== 'admin') {
-                            APP_DATA.userRoles[user.email] = { role: 'admin', nick: 'Szef' };
+                            if(!APP_DATA.userRoles[user.email]) APP_DATA.userRoles[user.email] = {};
+                            APP_DATA.userRoles[user.email].role = 'admin';
+                            if(!APP_DATA.userRoles[user.email].nick) APP_DATA.userRoles[user.email].nick = "Szef";
                             window.cloudAPI.save(APP_DATA);
                         }
                     } else {
@@ -521,15 +559,15 @@
         }
 
         function checkUserRole() {
-            // Logika ról jest teraz sterowana przez onAuth i checkAdminPermissions
-            
             // UI Admina
             if(currentUserRole === 'admin') {
                 document.getElementById('nav-admin-btn').classList.remove('hidden');
                 document.getElementById('admin-bar').classList.remove('hidden');
+                document.getElementById('admin-badge').classList.remove('hidden');
             } else {
                 document.getElementById('nav-admin-btn').classList.add('hidden');
                 document.getElementById('admin-bar').classList.add('hidden');
+                document.getElementById('admin-badge').classList.add('hidden');
             }
             
             renderAdminUsers();
@@ -547,16 +585,81 @@
             }
         }
 
+        // --- ZARZĄDZANIE PROFILEM ---
         function updateAuthUI() {
             if(currentUser) {
                 document.getElementById('form-login').classList.add('hidden');
+                document.getElementById('auth-tabs').classList.add('hidden');
                 document.getElementById('user-profile-view').classList.remove('hidden');
-                document.getElementById('user-display-name').innerText = APP_DATA.userRoles[currentUser.email]?.nick || 'User';
+                
+                const userData = APP_DATA.userRoles[currentUser.email] || {};
+                const displayNick = userData.nick || currentUser.email.split('@')[0];
+                const displayAvatar = userData.avatar || `https://ui-avatars.com/api/?name=${displayNick}&background=8b5cf6&color=fff`;
+
+                document.getElementById('user-display-name').innerText = displayNick;
                 document.getElementById('user-email-display').innerText = currentUser.email;
-                document.getElementById('user-initial').innerText = (currentUser.email[0] || 'U').toUpperCase();
+                document.getElementById('user-avatar-img').src = displayAvatar;
+                
+                // Wypełnij pola edycji
+                document.getElementById('edit-nick').value = displayNick;
+                document.getElementById('edit-avatar').value = userData.avatar || '';
             } else {
                 document.getElementById('form-login').classList.remove('hidden');
+                document.getElementById('auth-tabs').classList.remove('hidden');
                 document.getElementById('user-profile-view').classList.add('hidden');
+            }
+        }
+
+        function handleAvatarFile(event) {
+            const file = event.target.files[0];
+            if(file) resizeImage(file, 200, (base64) => { currentAvatarBase64 = base64; document.getElementById('edit-avatar').value = "Obraz wgrany (zapisz zmiany)"; });
+        }
+
+        async function handleUpdateProfile() {
+            if(!currentUser) return;
+            const newNick = document.getElementById('edit-nick').value;
+            const newAvatarUrl = currentAvatarBase64 || document.getElementById('edit-avatar').value;
+            const newPass = document.getElementById('edit-password').value;
+
+            // 1. Aktualizacja hasła (jeśli podano)
+            if(newPass) {
+                try {
+                    await window.cloudAPI.updateUserPass(newPass);
+                    showToast("Hasło zmienione!");
+                    document.getElementById('edit-password').value = '';
+                } catch(e) {
+                    showToast("Błąd hasła: " + e.message, "error");
+                    return; // Przerwij jeśli hasło nie przeszło
+                }
+            }
+
+            // 2. Aktualizacja danych publicznych (Nick/Avatar) w bazie
+            if(!APP_DATA.userRoles[currentUser.email]) APP_DATA.userRoles[currentUser.email] = { role: 'user' };
+            
+            APP_DATA.userRoles[currentUser.email].nick = newNick;
+            if(newAvatarUrl && newAvatarUrl !== "Obraz wgrany (zapisz zmiany)") {
+                APP_DATA.userRoles[currentUser.email].avatar = newAvatarUrl;
+            }
+
+            // Zapisz do bazy globalnej
+            try {
+                // Jeśli jesteś adminem -> save() zadziała.
+                // Jeśli jesteś userem -> save() może zostać odrzucone przez Rules, 
+                // ALE: w tej wersji "baza w jednym pliku" userzy nie mogą nadpisywać pliku Admina.
+                // Więc jeśli save() nie przejdzie, aktualizujemy tylko lokalnie dla widoku.
+                // (W prawdziwej aplikacji userzy mieliby osobne dokumenty, tutaj upraszczamy)
+                if(currentUserRole === 'admin') {
+                    await window.cloudAPI.save(APP_DATA);
+                    showToast("Profil zapisany!");
+                } else {
+                    // Dla usera: spróbuj zapisać, jak nie to tylko lokalnie
+                    updateAppData(APP_DATA);
+                    showToast("Zapisano (lokalnie/admin mode off)");
+                }
+                updateAuthUI();
+                document.getElementById('profile-settings').classList.add('hidden');
+            } catch(e) {
+                showToast("Błąd zapisu danych", "error");
             }
         }
 
@@ -567,10 +670,11 @@
             setLoading('btn-login-action', true);
             try {
                 await window.cloudAPI.login(email, pass);
-                closeAuthModal(); showToast("Zalogowano pomyślnie!");
-                setTimeout(() => { if(currentUserRole === 'admin') switchTab('admin'); }, 1500); // Małe opóźnienie na checkAdminPermissions
-            } catch (e) { showToast("Błąd logowania: " + e.message, "error"); } 
-            finally { setLoading('btn-login-action', false); }
+                // Nie zamykamy od razu, czekamy na onAuth i checkAdmin
+            } catch (e) { 
+                showToast("Błąd logowania: " + e.message, "error"); 
+                setLoading('btn-login-action', false);
+            } 
         }
 
         async function handleRegister() {
@@ -581,11 +685,14 @@
             setLoading('btn-reg-action', true);
             try {
                 await window.cloudAPI.register(email, pass);
-                // Próba rejestracji jako user (bez uprawnień zapisu, lokalnie)
                 if (!APP_DATA.userRoles) APP_DATA.userRoles = {};
                 APP_DATA.userRoles[email] = { role: 'user', nick: nick };
                 
-                closeAuthModal(); showToast("Konto założone! Witaj " + nick);
+                // Próba zapisu nowego usera (może się nie udać jeśli rules blokują, ale lokalnie zadziała)
+                updateAppData(APP_DATA);
+                
+                // closeAuthModal(); // Zostawmy otwarte żeby zobaczył profil
+                showToast("Konto założone! Witaj " + nick);
             } catch (e) { showToast("Błąd: " + e.message, "error"); } 
             finally { setLoading('btn-reg-action', false); }
         }
@@ -627,7 +734,22 @@
                 if(post.type === 'video') media = `<div class="relative mb-3 cursor-pointer group rounded-xl overflow-hidden shadow-sm" onclick="playVideo('${post.videoUrl}')"><img src="${post.thumbnail}" class="w-full h-auto object-cover group-hover:scale-105 transition-transform duration-500"><div class="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors"><div class="w-12 h-12 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center group-hover:scale-110 transition-transform"><i class="fas fa-play text-white ml-1"></i></div></div></div>`;
                 else if(post.type === 'photo') media = `<div class="rounded-xl overflow-hidden shadow-sm mb-3"><img src="${post.image}" class="w-full h-auto hover:scale-105 transition-transform duration-500"></div>`;
 
-                let commentsHTML = (post.comments || []).map((c, i) => `<div class="text-sm mb-2 pb-2 border-b border-gray-100 last:border-0 relative group/comment"><span class="font-bold text-black mr-2">${c.author}:</span><span class="text-gray-600">${c.text}</span>${isAdmin ? `<button onclick="deleteComment(${post.id}, ${i})" class="absolute right-0 top-0 text-red-400 hover:text-red-600 opacity-0 group-hover/comment:opacity-100 transition-opacity"><i class="fas fa-times"></i></button>` : ''}</div>`).join('');
+                let commentsHTML = (post.comments || []).map((c, i) => {
+                    // Znajdź avatar autora komentarza w bazie userRoles
+                    let authorAvatar = 'https://ui-avatars.com/api/?name='+c.author+'&background=random&color=fff';
+                    // Szukamy usera po nicku (proste wyszukiwanie, w dużej bazie byłoby po ID)
+                    const userEmail = Object.keys(APP_DATA.userRoles).find(email => APP_DATA.userRoles[email].nick === c.author);
+                    if(userEmail && APP_DATA.userRoles[userEmail].avatar) authorAvatar = APP_DATA.userRoles[userEmail].avatar;
+
+                    return `<div class="text-sm mb-3 pb-2 border-b border-gray-100 last:border-0 relative group/comment flex gap-3">
+                        <img src="${authorAvatar}" class="w-8 h-8 rounded-full object-cover bg-gray-200">
+                        <div class="flex-1">
+                            <span class="font-bold text-black mr-2 block text-xs">${c.author}</span>
+                            <span class="text-gray-600 block">${c.text}</span>
+                        </div>
+                        ${isAdmin ? `<button onclick="deleteComment(${post.id}, ${i})" class="absolute right-0 top-0 text-red-400 hover:text-red-600 opacity-0 group-hover/comment:opacity-100 transition-opacity"><i class="fas fa-times"></i></button>` : ''}
+                    </div>`;
+                }).join('');
 
                 return `<div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-soft break-inside-avoid mb-6 relative group hover:shadow-lg transition-shadow">${deleteBtn} ${media}<h3 class="font-bold mb-2 text-lg text-black">${post.title}</h3><p class="text-sm text-gray-600 mb-4 leading-relaxed">${post.text || ''}</p><div class="flex justify-between items-center text-xs text-gray-400 pt-4 border-t border-gray-50"><span class="flex items-center"><i class="far fa-clock mr-1"></i> ${new Date(post.date).toLocaleDateString()}</span><div class="flex gap-3"><button onclick="toggleComments(${post.id})" class="flex items-center gap-1 hover:text-brand-purple transition-colors bg-gray-50 px-3 py-1.5 rounded-full"><i class="far fa-comment-dots text-base"></i> <span class="font-bold">${post.comments ? post.comments.length : 0}</span></button><button onclick="toggleLike(${post.id})" class="flex items-center gap-1 hover:bg-red-50 px-3 py-1.5 rounded-full transition-colors group bg-gray-50"><i class="${likeIconClass} text-base group-active:scale-125 transition-transform"></i><span class="font-bold">${post.likes || 0}</span></button></div></div><div id="comments-${post.id}" class="hidden mt-4 pt-4 border-t border-gray-50 bg-gray-50/50 -mx-5 -mb-5 p-5 rounded-b-2xl"><div class="max-h-40 overflow-y-auto pr-2 mb-3 no-scrollbar">${commentsHTML || '<p class="text-xs text-gray-400 italic">Brak komentarzy.</p>'}</div><div class="flex gap-2"><input id="input-comment-${post.id}" class="bg-white border border-gray-200 w-full text-sm p-2 rounded-lg text-black focus:border-brand-purple outline-none shadow-sm" placeholder="Napisz komentarz..."><button onclick="addComment(${post.id})" class="text-brand-purple bg-white p-2 rounded-lg border border-gray-200 hover:bg-brand-purple hover:text-white transition-colors shadow-sm"><i class="fas fa-paper-plane"></i></button></div></div></div>`;
             }).join('');
@@ -653,7 +775,9 @@
             const post = APP_DATA.posts.find(p => p.id === id);
             if(post) {
                 if(!post.comments) post.comments = [];
-                const nick = APP_DATA.userRoles[currentUser.email]?.nick || currentUser.email.split('@')[0];
+                const userData = APP_DATA.userRoles[currentUser.email] || {};
+                const nick = userData.nick || currentUser.email.split('@')[0];
+                
                 post.comments.push({author: nick, text: input.value});
                 saveToCloud(); renderBlog(); input.value = ''; showToast("Dodano komentarz");
             }
