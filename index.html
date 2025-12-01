@@ -39,6 +39,8 @@
             appId: "1:726610553428:web:c4ac55e28fa46dd0439bc1"
         };
 
+        const BOSS_EMAIL = "adrianniekil@gmail.com";
+
         let app, auth, db;
         try {
             app = initializeApp(firebaseConfig);
@@ -49,11 +51,11 @@
         // --- DANE DOMYŚLNE ---
         window.DEFAULT_DATA = {
             config: {
-                firstName: "ADIS", lastName: "",   
+                firstName: "ADRION", lastName: "",   
                 bio: "Buduję formę, nawyki i głowę. Bez filtrów, z pełnym zaangażowaniem.",
-                avatarUrl: "https://scontent.fktw1-1.fna.fbcdn.net/v/t1.15752-9/590430506_2072283010210305_2940276320812559902_n.jpg?stp=dst-jpg_p480x480_tt6&_nc_cat=103&ccb=1-7&_nc_sid=0024fc&_nc_ohc=67Eui4jN2YsQ7kNvwGcFOQM&_nc_oc=Adlx4JjzEc_oKB0BXAqqfCe9qj1BnHakFpV5stHvCCZCQW2V1Z5-rOsEmMwvFpXZFQ_4-LMRS4WeMPQJ79nf8K7l&_nc_ad=z-m&_nc_cid=0&_nc_zt=23&_nc_ht=scontent.fktw1-1.fna&oh=03_Q7cD4AHjuF9oTc3rs92AILuYV6IOQZM7UbgItSC4Iwb-Nk-Scg&oe=69558245",
-                stats: { youtube: "SOON", instagram: "168", projects: "0" },
-                links: { instagram: "https://www.instagram.com/_16adis/", youtube: "https://youtube.com" }
+                avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=1964&auto=format&fit=crop",
+                stats: { youtube: "0", instagram: "168", projects: "0" },
+                links: { instagram: "https://instagram.com", youtube: "https://youtube.com" }
             },
             posts: [{ id: 101, type: 'status', title: 'Start', text: 'Witaj na nowej stronie!', date: new Date().toISOString() }],
             products: []
@@ -62,6 +64,7 @@
         let APP_DATA = JSON.parse(JSON.stringify(window.DEFAULT_DATA));
         let INTERACTIONS = {}; 
         let USERS_CACHE = {};
+        let ORDERS_CACHE = [];
         let MY_CART = [];
         
         let currentUser = null;
@@ -84,7 +87,7 @@
                 }
             });
 
-            // 2. Interakcje (Lajki, Komentarze)
+            // 2. Interakcje
             const metaRef = collection(db, 'projects', 'ub-tworcy-adrion', 'posts_meta');
             onSnapshot(metaRef, (snap) => {
                 snap.forEach(doc => INTERACTIONS[doc.id] = doc.data());
@@ -107,6 +110,7 @@
                 } catch(e) { return false; }
             },
 
+            // ZAPIS DANYCH STRONY (POSTY, PRODUKTY, KONFIGURACJA)
             saveContent: async () => {
                 if(isAdmin) {
                     const mainRef = doc(db, 'projects', 'ub-tworcy-adrion', 'public_data', 'hub_content');
@@ -129,6 +133,34 @@
                     localStorage.setItem('local_cart', JSON.stringify(MY_CART));
                 }
                 renderCart();
+            },
+
+            placeOrder: async (orderDetails) => {
+                if(!currentUser) return;
+                const order = {
+                    id: 'ORD-' + Date.now(),
+                    date: new Date().toISOString(),
+                    items: MY_CART,
+                    total: MY_CART.reduce((s, i) => s + parseFloat(i.price), 0),
+                    details: orderDetails,
+                    status: 'nowe',
+                    userEmail: currentUser.email
+                };
+                
+                await setDoc(doc(db, 'projects', 'ub-tworcy-adrion', 'users', currentUser.uid), { 
+                    orders: arrayUnion(order),
+                    cart: [] 
+                }, { merge: true });
+
+                // Jeśli jesteś adminem, to odświeży widok zamówień
+                if(isAdmin) {
+                    // W tej uproszczonej wersji baza zamówień jest w userach, więc admin musi pobrać wszystkich userów
+                    // aby zobaczyć zamówienia. To się dzieje przy starcie.
+                }
+
+                MY_CART = []; 
+                renderCart();
+                return order.id;
             },
 
             toggleLike: async (postId) => {
@@ -177,7 +209,11 @@
                     }
                     
                     const allUsers = await getDocs(collection(db, 'projects', 'ub-tworcy-adrion', 'users'));
-                    allUsers.forEach(d => USERS_CACHE[d.id] = d.data());
+                    allUsers.forEach(d => {
+                        const data = d.data();
+                        USERS_CACHE[d.id] = data;
+                        if(data.orders) ORDERS_CACHE.push(...data.orders);
+                    });
                 } else {
                     MY_CART = JSON.parse(localStorage.getItem('local_cart') || '[]');
                 }
@@ -193,12 +229,16 @@
             renderHeader();
             renderBlog();
             renderShop();
-            if(isAdmin) renderAdmin();
+            if(isAdmin) {
+                renderAdminUsers();
+                renderAdminOrders();
+                fillAdminSettings();
+            }
         };
 
         function renderHeader() {
             const c = APP_DATA.config;
-            document.getElementById('hero-name').innerText = c.firstName;
+            document.getElementById('hero-name').innerText = c.firstName + ' ' + c.lastName;
             document.getElementById('hero-desc').innerText = c.bio;
             document.getElementById('hero-avatar').src = c.avatarUrl;
             document.getElementById('stat-yt').innerText = c.stats.youtube;
@@ -209,6 +249,19 @@
             linksDiv.innerHTML = '';
             if(c.links?.instagram) linksDiv.innerHTML += `<a href="${c.links.instagram}" target="_blank" class="text-gray-400 hover:text-brand-DEFAULT transition text-2xl"><i class="fab fa-instagram"></i></a>`;
             if(c.links?.youtube) linksDiv.innerHTML += `<a href="${c.links.youtube}" target="_blank" class="text-gray-400 hover:text-brand-DEFAULT transition text-2xl"><i class="fab fa-youtube"></i></a>`;
+        }
+
+        function fillAdminSettings() {
+            // Wypełnij formularz ustawień aktualnymi danymi
+            const c = APP_DATA.config;
+            document.getElementById('set-name').value = c.firstName;
+            document.getElementById('set-lastname').value = c.lastName;
+            document.getElementById('set-bio').value = c.bio;
+            document.getElementById('set-avatar').value = c.avatarUrl;
+            document.getElementById('set-yt').value = c.stats.youtube;
+            document.getElementById('set-ig').value = c.stats.instagram;
+            document.getElementById('set-link-ig').value = c.links.instagram;
+            document.getElementById('set-link-yt').value = c.links.youtube;
         }
 
         function renderBlog() {
@@ -279,6 +332,7 @@
             const list = document.getElementById('cart-items');
             const badge = document.getElementById('cart-badge');
             const badgeMob = document.getElementById('cart-badge-mob');
+            const checkoutList = document.getElementById('checkout-items-summary');
             
             badge.innerText = MY_CART.length;
             badge.classList.toggle('hidden', MY_CART.length === 0);
@@ -286,13 +340,15 @@
             badgeMob.classList.toggle('hidden', MY_CART.length === 0);
 
             if(MY_CART.length === 0) {
-                list.innerHTML = '<div class="text-center text-gray-500 mt-10">Pusty koszyk</div>';
-                document.getElementById('cart-total').innerText = "0.00 PLN";
+                const emptyHTML = '<div class="text-center text-gray-500 mt-10">Pusty koszyk</div>';
+                list.innerHTML = emptyHTML;
+                if(checkoutList) checkoutList.innerHTML = emptyHTML;
+                document.querySelectorAll('.cart-total-display').forEach(el => el.innerText = "0.00 PLN");
                 return;
             }
 
             let total = 0;
-            list.innerHTML = MY_CART.map((item, idx) => {
+            const itemsHTML = MY_CART.map((item, idx) => {
                 total += parseFloat(item.price);
                 return `
                 <div class="flex items-center gap-3 bg-dark-900 p-3 rounded-xl mb-2">
@@ -304,14 +360,42 @@
                     <button onclick="removeFromCart(${idx})" class="text-gray-500 hover:text-red-500"><i class="fas fa-trash"></i></button>
                 </div>`;
             }).join('');
-            document.getElementById('cart-total').innerText = total.toFixed(2) + " PLN";
+
+            list.innerHTML = itemsHTML;
+            if(checkoutList) checkoutList.innerHTML = itemsHTML; 
+            document.querySelectorAll('.cart-total-display').forEach(el => el.innerText = total.toFixed(2) + " PLN");
         }
 
-        function renderAdmin() {
+        function renderAdminUsers() {
             const list = document.getElementById('admin-users-table');
             const users = Object.values(USERS_CACHE);
-            document.getElementById('admin-user-count').innerText = users.length;
             list.innerHTML = users.map(u => `<tr class="border-b border-dark-700 hover:bg-dark-700/50"><td class="p-3 font-bold text-white">${u.nick}</td><td class="p-3 text-gray-400 text-sm">${u.email}</td><td class="p-3 text-xs">${u.role||'user'}</td></tr>`).join('');
+        }
+
+        function renderAdminOrders() {
+            const list = document.getElementById('admin-orders-table');
+            // Sortowanie zamówień (najnowsze pierwsze)
+            ORDERS_CACHE.sort((a,b) => new Date(b.date) - new Date(a.date));
+            
+            document.getElementById('admin-orders-count').innerText = ORDERS_CACHE.length;
+            if(ORDERS_CACHE.length === 0) { list.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-500">Brak zamówień</td></tr>'; return; }
+
+            list.innerHTML = ORDERS_CACHE.map(o => `
+                <tr class="border-b border-dark-700 hover:bg-dark-700/50">
+                    <td class="p-3">
+                        <span class="text-brand-DEFAULT font-bold text-xs">${o.id}</span>
+                        <div class="text-xs text-gray-400">${new Date(o.date).toLocaleDateString()}</div>
+                    </td>
+                    <td class="p-3 text-sm text-white">
+                        ${o.details.name}<br>
+                        <span class="text-gray-500 text-xs">${o.userEmail}</span>
+                    </td>
+                    <td class="p-3 text-sm text-white font-bold">${o.total} PLN</td>
+                    <td class="p-3">
+                        <span class="bg-green-500/20 text-green-500 px-2 py-1 rounded text-xs font-bold uppercase">${o.status}</span>
+                    </td>
+                </tr>
+            `).join('');
         }
 
         // --- INTERAKCJE ---
@@ -326,6 +410,61 @@
         window.removeFromCart = (idx) => { 
             MY_CART.splice(idx, 1); 
             window.api.saveCart();
+        };
+
+        window.goToCheckout = () => {
+            if(!currentUser) { alert("Musisz się zalogować, aby złożyć zamówienie!"); return openModal('auth'); }
+            if(MY_CART.length === 0) return alert("Koszyk jest pusty!");
+            document.getElementById('cart-view').classList.add('hidden');
+            document.getElementById('checkout-view').classList.remove('hidden');
+        };
+
+        window.backToCart = () => {
+            document.getElementById('checkout-view').classList.add('hidden');
+            document.getElementById('cart-view').classList.remove('hidden');
+        };
+
+        window.submitOrder = async () => {
+            const form = {
+                name: document.getElementById('order-name').value,
+                address: document.getElementById('order-address').value,
+                city: document.getElementById('order-city').value,
+                phone: document.getElementById('order-phone').value,
+                blik: document.getElementById('order-blik').value
+            };
+            
+            if(!form.name || !form.address || !form.city || !form.phone || !form.blik) return alert("Wypełnij wszystkie dane!");
+            if(form.blik.length !== 6) return alert("Kod BLIK musi mieć 6 cyfr!");
+
+            const btn = document.getElementById('btn-order-submit');
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> PRZETWARZANIE...';
+            btn.disabled = true;
+
+            setTimeout(async () => {
+                try {
+                    const orderId = await window.api.placeOrder(form);
+                    alert(`✅ Płatność przyjęta!\nZamówienie zostało złożone.`);
+                    closeModal('cart');
+                    backToCart();
+                    document.getElementById('order-blik').value = '';
+                } catch(e) { alert("Błąd: " + e.message); } 
+                finally { btn.innerText = "ZATWIERDŹ I ZAPŁAĆ (BLIK)"; btn.disabled = false; }
+            }, 2000);
+        };
+
+        window.savePageSettings = () => {
+            APP_DATA.config.firstName = document.getElementById('set-name').value;
+            APP_DATA.config.lastName = document.getElementById('set-lastname').value;
+            APP_DATA.config.bio = document.getElementById('set-bio').value;
+            APP_DATA.config.avatarUrl = uploadBuffer || document.getElementById('set-avatar').value;
+            APP_DATA.config.stats.youtube = document.getElementById('set-yt').value;
+            APP_DATA.config.stats.instagram = document.getElementById('set-ig').value;
+            APP_DATA.config.links.instagram = document.getElementById('set-link-ig').value;
+            APP_DATA.config.links.youtube = document.getElementById('set-link-yt').value;
+            
+            window.api.saveContent();
+            uploadBuffer = '';
+            alert("Ustawienia strony zapisane!");
         };
 
         window.addComm = (id) => { const inp = document.getElementById('in-c-'+id); if(!inp.value.trim()) return; window.api.addComment(id, inp.value.trim()); inp.value = ''; };
@@ -373,6 +512,14 @@
             const mobBtn = document.getElementById('mob-btn-'+id);
             if(mobBtn) { mobBtn.classList.remove('text-gray-500'); mobBtn.classList.add('text-brand-DEFAULT'); }
         };
+
+        window.openAdminTab = (tabName) => {
+            document.querySelectorAll('.admin-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById('admin-tab-'+tabName).classList.remove('hidden');
+            document.querySelectorAll('.admin-tab-btn').forEach(el => el.classList.remove('border-brand-DEFAULT', 'text-white'));
+            document.getElementById('btn-adm-'+tabName).classList.add('border-brand-DEFAULT', 'text-white');
+        };
+
         window.handleFile = (e, lid) => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = (ev) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); const x = c.getContext('2d'); const s = Math.min(1000/i.width, 1); c.width = i.width*s; c.height = i.height*s; x.drawImage(i,0,0,c.width,c.height); uploadBuffer = c.toDataURL('image/jpeg', 0.8); if(lid) document.getElementById(lid).innerText = "Gotowe!"; }; i.src = ev.target.result; }; r.readAsDataURL(f); };
         window.openModal = (id) => document.getElementById('modal-'+id).classList.remove('hidden');
         window.closeModal = (id) => document.getElementById('modal-'+id).classList.add('hidden');
@@ -492,10 +639,20 @@
             </div>
         </div>
 
-        <!-- ADMIN -->
+        <!-- ADMIN (NOWY UKŁAD Z ZAKŁADKAMI) -->
         <div id="view-admin" class="view-section hidden">
             <h2 class="text-3xl font-black mb-8 border-b border-dark-700 pb-4 text-red-500">CENTRUM DOWODZENIA</h2>
-            <div class="grid lg:grid-cols-2 gap-8">
+            
+            <!-- ADMIN MENU -->
+            <div class="flex gap-4 mb-8 overflow-x-auto pb-2">
+                <button id="btn-adm-content" onclick="openAdminTab('content')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold border-brand-DEFAULT text-white">TREŚĆ</button>
+                <button id="btn-adm-settings" onclick="openAdminTab('settings')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold">USTAWIENIA STRONY</button>
+                <button id="btn-adm-users" onclick="openAdminTab('users')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold">UŻYTKOWNICY</button>
+                <button id="btn-adm-orders" onclick="openAdminTab('orders')" class="admin-tab-btn px-6 py-2 rounded-full border border-dark-600 bg-dark-800 text-gray-400 hover:border-brand-DEFAULT hover:text-white transition font-bold">ZAMÓWIENIA</button>
+            </div>
+
+            <!-- TREŚĆ (POSTY/PRODUKTY) -->
+            <div id="admin-tab-content" class="admin-tab-content grid lg:grid-cols-2 gap-8">
                 <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700">
                     <h3 class="font-bold text-xl mb-4 text-white">Dodaj Wpis</h3>
                     <input id="add-p-title" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg mb-3 text-white focus:border-brand-DEFAULT outline-none" placeholder="Tytuł posta">
@@ -525,14 +682,82 @@
                     </div>
                     <button onclick="addProd()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition">DODAJ PRODUKT</button>
                 </div>
-                <div class="bg-dark-800 p-6 rounded-2xl border border-dark-700 lg:col-span-2">
-                    <h3 class="font-bold text-xl mb-4 text-white">Baza Użytkowników (<span id="admin-user-count">0</span>)</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm">
-                            <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th></tr></thead>
-                            <tbody id="admin-users-table"></tbody>
-                        </table>
+            </div>
+
+            <!-- USTAWIENIA STRONY (NOWE!) -->
+            <div id="admin-tab-settings" class="admin-tab-content hidden bg-dark-800 p-6 rounded-2xl border border-dark-700 max-w-2xl">
+                <h3 class="font-bold text-xl mb-6 text-white">Konfiguracja Strony Głównej</h3>
+                
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Imię</label>
+                            <input id="set-name" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Nazwisko (Kolor)</label>
+                            <input id="set-lastname" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white">
+                        </div>
                     </div>
+
+                    <div>
+                        <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Opis (Bio)</label>
+                        <textarea id="set-bio" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white h-20 resize-none"></textarea>
+                    </div>
+
+                    <div>
+                        <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Główny Avatar (URL lub Plik)</label>
+                        <input id="set-avatar" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white mb-2" placeholder="https://...">
+                        <input type="file" onchange="handleFile(event)" class="text-xs text-gray-500">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4 pt-4 border-t border-dark-600">
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Licznik YouTube</label>
+                            <input id="set-yt" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Licznik Instagram</label>
+                            <input id="set-ig" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Link Instagram</label>
+                            <input id="set-link-ig" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase font-bold block mb-1">Link YouTube</label>
+                            <input id="set-link-yt" class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white">
+                        </div>
+                    </div>
+
+                    <button onclick="savePageSettings()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-3 rounded-lg mt-4 transition">ZAPISZ USTAWIENIA</button>
+                </div>
+            </div>
+
+            <!-- UŻYTKOWNICY -->
+            <div id="admin-tab-users" class="admin-tab-content hidden bg-dark-800 p-6 rounded-2xl border border-dark-700">
+                <h3 class="font-bold text-xl mb-4 text-white">Lista Użytkowników</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">Nick</th><th class="pb-2">Email</th><th class="pb-2">Rola</th></tr></thead>
+                        <tbody id="admin-users-table"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ZAMÓWIENIA -->
+            <div id="admin-tab-orders" class="admin-tab-content hidden bg-dark-800 p-6 rounded-2xl border border-dark-700">
+                <h3 class="font-bold text-xl mb-4 text-white">Nowe Zamówienia (<span id="admin-orders-count">0</span>)</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="text-gray-500 uppercase text-xs border-b border-dark-700"><tr><th class="pb-2">ID/Data</th><th class="pb-2">Klient</th><th class="pb-2">Kwota</th><th class="pb-2">Status</th></tr></thead>
+                        <tbody id="admin-orders-table">
+                            <!-- Tutaj wpadną zamówienia -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -559,7 +784,7 @@
     <!-- MODAL LOGOWANIA -->
     <div id="modal-auth" class="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center hidden backdrop-blur-sm p-4">
         <div class="bg-dark-800 w-full max-w-sm rounded-2xl border border-dark-600 p-8 relative">
-            <button onclick="closeModal('auth')" class="absolute top-4 right-4 text-gray-500 hover:text-white"><i class="fas fa-times"></i></button>
+            <button onclick="closeModal('auth')" class="absolute top-4 right-4 text-gray-500 hover:text-white"><i class="fas fa-times text-xl"></i></button>
             <h2 class="text-2xl font-bold text-center mb-6 text-white">Dołącz do nas</h2>
             <div class="flex mb-6 border-b border-dark-700">
                 <button onclick="document.getElementById('form-l').classList.remove('hidden');document.getElementById('form-r').classList.add('hidden');" class="flex-1 pb-2 text-brand-DEFAULT font-bold border-b-2 border-brand-DEFAULT">Logowanie</button>
@@ -585,7 +810,8 @@
         <div class="bg-dark-800 w-full max-w-md h-full border-l border-dark-700 shadow-2xl flex flex-col relative animate-fade-in">
             <button onclick="closeModal('cart')" class="absolute top-6 right-6 text-gray-400 hover:text-white z-10"><i class="fas fa-times text-xl"></i></button>
             
-            <div class="h-full flex flex-col p-6">
+            <!-- WIDOK LISTY -->
+            <div id="cart-view" class="h-full flex flex-col p-6">
                 <h2 class="text-3xl font-black mb-6">TWOJE ZAKUPY</h2>
                 <div id="cart-items" class="flex-1 overflow-y-auto custom-scroll space-y-3"></div>
                 <div class="mt-6 pt-6 border-t border-dark-700">
@@ -593,7 +819,48 @@
                         <span class="text-gray-400">SUMA:</span>
                         <span class="font-bold text-white cart-total-display">0.00 PLN</span>
                     </div>
-                    <button onclick="alert('Dziękujemy za zakupy! (To demo)')" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-4 rounded-xl transition">PRZEJDŹ DO PŁATNOŚCI</button>
+                    <button onclick="goToCheckout()" class="w-full bg-brand-DEFAULT hover:bg-brand-hover text-white font-bold py-4 rounded-xl transition">PRZEJDŹ DO PŁATNOŚCI</button>
+                </div>
+            </div>
+
+            <!-- WIDOK KASY (CHECKOUT) -->
+            <div id="checkout-view" class="h-full flex flex-col p-6 hidden">
+                <button onclick="backToCart()" class="text-sm text-gray-400 hover:text-white mb-4 flex items-center gap-2"><i class="fas fa-arrow-left"></i> Wróć do koszyka</button>
+                <h2 class="text-2xl font-black mb-6">DANE DO WYSYŁKI</h2>
+                
+                <div class="flex-1 overflow-y-auto custom-scroll space-y-4 pr-2">
+                    <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
+                        <div class="space-y-3">
+                            <input id="order-name" type="text" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Imię i Nazwisko">
+                            <input id="order-address" type="text" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Ulica i numer">
+                            <input id="order-city" type="text" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Kod pocztowy i Miasto">
+                            <input id="order-phone" type="tel" class="w-full bg-dark-800 border border-dark-600 p-3 rounded-lg text-white text-sm" placeholder="Numer telefonu">
+                        </div>
+                    </div>
+
+                    <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
+                        <h3 class="font-bold text-sm text-gray-400 mb-3 uppercase">Płatność</h3>
+                        <div class="space-y-2">
+                            <label class="flex items-center gap-3 p-3 bg-dark-800 rounded-lg cursor-pointer hover:bg-dark-700 transition border border-dark-700 border-brand-DEFAULT">
+                                <input type="radio" name="payment" value="blik" checked class="accent-brand-DEFAULT">
+                                <span class="font-bold">BLIK</span>
+                            </label>
+                            <input id="order-blik" type="text" maxlength="6" class="w-full bg-dark-900 border border-dark-600 p-3 rounded-lg text-white text-center tracking-widest text-xl" placeholder="KOD BLIK (6 cyfr)">
+                        </div>
+                    </div>
+
+                    <div class="bg-dark-900 p-4 rounded-xl border border-dark-600">
+                        <h3 class="font-bold text-sm text-gray-400 mb-2 uppercase">Podsumowanie</h3>
+                        <div id="checkout-items-summary" class="text-sm text-gray-300 space-y-1 mb-2"></div>
+                        <div class="flex justify-between font-bold text-white border-t border-dark-700 pt-2">
+                            <span>Razem do zapłaty:</span>
+                            <span class="cart-total-display text-brand-DEFAULT">0.00 PLN</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-4 pt-4 border-t border-dark-700">
+                    <button id="btn-order-submit" onclick="submitOrder()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-green-900/20">ZATWIERDŹ I ZAPŁAĆ (BLIK)</button>
                 </div>
             </div>
         </div>
